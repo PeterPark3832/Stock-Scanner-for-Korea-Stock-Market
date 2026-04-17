@@ -1,0 +1,6 @@
+Finance-dataReader
+pandas
+requests
+schedule
+python-dotenv
+holidays

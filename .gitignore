@@ -1,0 +1,30 @@
+# 환경변수 (API 키 포함 - 절대 커밋 금지)
+.env
+
+# 런타임 캐시 (자동 생성됨 - 용량 크고 불필요)
+data_cache/
+
+# 로그 파일
+*.log
+scanner.log
+
+# 포지션/거래 이력 (개인 데이터)
+positions.json
+trade_history.csv
+
+# Python 캐시
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db

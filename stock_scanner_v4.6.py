@@ -465,6 +465,113 @@ def _calc_order_qty(price: int, budget: int) -> int:
     return budget // price
 
 
+def sync_kis_holdings() -> int:
+    """
+    KIS 실제 보유 종목을 positions.json에 동기화.
+    이미 등록된 ticker는 건너뜀. 새로 발견된 종목은 수동 등록으로 추가.
+    반환값: 새로 추가된 종목 수
+    """
+    token = get_kis_access_token()
+    if not token:
+        log.warning("[KIS 동기화] 토큰 발급 실패 — 건너뜀")
+        return 0
+    cano, acnt_prdt = _parse_account()
+    if not cano:
+        log.warning("[KIS 동기화] KIS_ACCOUNT_NO 미설정 — 건너뜀")
+        return 0
+
+    tr_id = "TTTC8434R" if _KIS_MODE == "real" else "VTTC8434R"
+    base  = "https://openapi.koreainvestment.com:9443" if _KIS_MODE == "real" else "https://openapivts.koreainvestment.com:29443"
+    try:
+        res = requests.get(
+            f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "appkey":        KIS_APP_KEY,
+                "appsecret":     KIS_APP_SECRET,
+                "tr_id":         tr_id,
+                "Content-Type":  "application/json; charset=utf-8",
+            },
+            params={
+                "CANO":               cano,
+                "ACNT_PRDT_CD":       acnt_prdt,
+                "AFHR_FLPR_YN":       "N",
+                "OFL_YN":             "",
+                "INQR_DVSN":          "02",
+                "UNPR_DVSN":          "01",
+                "FUND_STTL_ICLD_YN":  "N",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN":          "00",
+                "CTX_AREA_FK100":     "",
+                "CTX_AREA_NK100":     "",
+            },
+            timeout=10,
+        )
+        res.raise_for_status()
+        data = res.json()
+    except Exception as e:
+        log.error(f"[KIS 동기화] API 호출 실패: {e}")
+        return 0
+
+    if data.get("rt_cd") != "0":
+        log.warning(f"[KIS 동기화] API 오류: {data.get('msg1', '')}")
+        return 0
+
+    holdings = data.get("output1", [])
+    if not holdings:
+        log.info("[KIS 동기화] 보유 종목 없음")
+        return 0
+
+    existing   = load_positions()
+    exist_set  = {p["ticker"] for p in existing}
+    now_str    = datetime.now(KST).strftime("%Y-%m-%d")
+    added      = 0
+
+    for h in holdings:
+        ticker = h.get("pdno", "").strip()
+        qty    = int(h.get("hldg_qty", "0"))
+        if not ticker or qty <= 0:
+            continue
+        if ticker in exist_set:
+            continue
+
+        avg_price = int(float(h.get("pchs_avg_pric", "0")))
+        name      = h.get("prdt_name", ticker)
+        if avg_price <= 0:
+            continue
+
+        tp = int(avg_price * (1 + STRATEGY["tp_pct"]))
+        sl = int(avg_price * 0.95)  # 수동 등록 종목 기본 손절 -5%
+        existing.append({
+            "ticker":          ticker,
+            "name":            name,
+            "entry":           avg_price,
+            "tp":              tp,
+            "sl":              sl,
+            "sl_init":         sl,
+            "high_water_mark": avg_price,
+            "entry_date":      now_str,
+            "sector":          "",
+            "signal_score":    None,
+            "bo_lookback":     None,
+            "pullback_depth":  None,
+            "quantity":        qty,
+            "auto_traded":     False,
+        })
+        exist_set.add(ticker)
+        added += 1
+        log.info(f"  [KIS 동기화] {name}({ticker}) {qty}주 @ {avg_price:,}원 → 포지션 추가")
+
+    if added:
+        save_positions(existing)
+        send_telegram(
+            f"🔄 *KIS 보유 종목 동기화 완료*\n"
+            f"새로 등록: {added}개 종목\n"
+            f"(수동 매수 종목 — TP/SL 기본값 적용)"
+        )
+    return added
+
+
 # ==========================================
 # FDR 데이터 로딩 (지수 백오프 재시도)
 # ==========================================
@@ -1661,6 +1768,12 @@ if __name__ == "__main__":
     if not KIS_ACCOUNT_NO and _auto_trade_enabled:
         log.warning("⚠️  AUTO_TRADE=true 이지만 KIS_ACCOUNT_NO 미설정 — 자동매매 비활성화")
         _auto_trade_enabled = False
+        send_telegram(
+            "⚠️ *자동매매 비활성화*\n"
+            "AUTO_TRADE=true 로 설정되었으나 KIS_ACCOUNT_NO가 비어 있습니다.\n"
+            ".env 파일에 계좌번호를 입력 후 서비스를 재시작하세요.\n"
+            "예: KIS_ACCOUNT_NO=50071234-01"
+        )
 
     schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,          "Heartbeat"))
     schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
@@ -1685,6 +1798,14 @@ if __name__ == "__main__":
     ).start()
 
     send_startup_message()
+
+    # KIS 실제 보유 종목 → positions.json 동기화 (계좌번호 설정 시)
+    if KIS_ACCOUNT_NO:
+        log.info("[KIS 동기화] 실제 보유 종목 조회 중...")
+        n = sync_kis_holdings()
+        if n == 0:
+            log.info("[KIS 동기화] 신규 추가 없음 (이미 등록됐거나 보유 종목 없음)")
+
     run_catchup()
 
     while not _shutdown_event.is_set():

@@ -4,3 +4,4 @@ requests
 schedule
 python-dotenv
 holidays
+pytz

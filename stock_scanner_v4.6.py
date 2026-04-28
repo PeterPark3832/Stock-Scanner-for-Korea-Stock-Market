@@ -1300,8 +1300,11 @@ def job_second_screen() -> None:
             f"동일 섹터 {STRATEGY['max_sector_count']}개 초과 — 분산 여부 판단 필요"
         )
 
-    # ── v4.6: 자동 매수 주문 ────────────────────────────────
-    if do_trade:
+    with _signals_lock:
+        paused = _pause_signals
+
+    # ── v4.6: 자동 매수 주문 (pause 중엔 주문도 안 함) ─────────
+    if do_trade and not paused:
         _execute_buy_orders(verified)
 
     date_str = datetime.now(KST).strftime("%m/%d %H:%M")
@@ -1316,12 +1319,12 @@ def job_second_screen() -> None:
         bp_str    = f"{s['buy_pressure']:.0f}" if s.get("buy_pressure") is not None else "-"
         pd_str    = f"{s['pullback_depth']:.1f}%" if s.get("pullback_depth") is not None else "-"
         order_str = ""
-        if do_trade:
+        if do_trade and not paused:
             if s.get("auto_traded"):
                 order_str = f"\n  🤖 자동매수 완료 — {s.get('quantity', 0)}주 (주문번호: {s.get('order_no', '-')})"
             else:
                 order_str = f"\n  ⚠️ 자동매수 실패 — {s.get('order_error', '수량 0 또는 잔고 부족')} | 수동 매수 필요"
-        msg += f"*{i}. {s['name']}* ({s['ticker']}){sec_str} {icon}\n"
+        msg += f"*{i}. {_esc(s['name'])}* ({s['ticker']}){sec_str} {icon}\n"
         msg += f"  ▪️ 신호점수: {score_bar} {score}점\n"
         msg += f"  ▪️ 기준봉: {s['bo_date']} +{s['bo_body_pct']}% / {s.get('bo_vol_ratio', '?')}x{rsi_str}\n"
         msg += f"  ▪️ 체결강도: {bp_str} | 눌림깊이: {pd_str} ({s.get('bo_lookback', '?')}일 경과)\n"
@@ -1334,10 +1337,7 @@ def job_second_screen() -> None:
             msg += f"  ▪️ 실시간 거래량: {s['live_vol']:,}\n"
         msg += order_str + "\n"
     trade_tag = "🤖 자동매매 ON" if do_trade else "📋 수동매매 모드"
-    msg += f"✅ KIS 실시간 재검증  ⚠️ 종가 기준(API 미확인)\n_{trade_tag}_"
-
-    with _signals_lock:
-        paused = _pause_signals
+    msg += f"✅ KIS 실시간 재검증  ⚠️ 종가 기준(API 미확인)\n{trade_tag}"
 
     if paused:
         send_telegram(
@@ -1363,8 +1363,19 @@ def _execute_buy_orders(verified: list[dict]) -> None:
 
     log.info(f"  [자동매수] 주문 가능 현금: {available:,}원 | 종목당 예산: {TRADE_AMOUNT_PER_STOCK:,}원")
 
-    existing_tickers = {p["ticker"] for p in load_positions()}
-    remaining_cash = available
+    current_positions = load_positions()
+    existing_tickers  = {p["ticker"] for p in current_positions}
+    open_slots        = max(0, STRATEGY["max_positions"] - len(current_positions))
+    remaining_cash    = available
+    bought_count      = 0
+
+    if open_slots == 0:
+        log.warning("  [자동매수 스킵 전체] 포지션 한도 도달 — 매수 없음")
+        for s in verified:
+            s["quantity"]    = 0
+            s["auto_traded"] = False
+            s["order_error"] = "포지션 한도 초과"
+        return
 
     for s in verified:
         # 이미 보유 중인 종목 중복 매수 방지
@@ -1373,6 +1384,14 @@ def _execute_buy_orders(verified: list[dict]) -> None:
             s["quantity"]    = 0
             s["auto_traded"] = False
             s["order_error"] = "이미 보유 중"
+            continue
+
+        # 포지션 슬롯 소진 시 중단
+        if bought_count >= open_slots:
+            log.info(f"  [자동매수 스킵] {s['name']} — 포지션 슬롯 소진 ({open_slots}개 한도)")
+            s["quantity"]    = 0
+            s["auto_traded"] = False
+            s["order_error"] = "포지션 한도 초과"
             continue
 
         entry = s["entry"]
@@ -1395,6 +1414,7 @@ def _execute_buy_orders(verified: list[dict]) -> None:
         if result["success"]:
             cost = qty * entry
             remaining_cash -= cost
+            bought_count   += 1
             log.info(f"  [자동매수 완료] {s['name']} {qty}주 × {entry:,}원 = {cost:,}원")
         else:
             log.error(f"  [자동매수 실패] {s['name']}: {result['error']}")
@@ -1813,6 +1833,7 @@ if __name__ == "__main__":
     schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
     schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,       "1차 스크리닝"))
     schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))
+    schedule.every().day.at("15:25", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장마감 모니터링(15:25)"))
 
     log.info("\n✅ 스윙 눌림목 검색기 v4.6 시작")
     log.info("  ⏰ 09:00 → Heartbeat + 만료 이력 기록 (월요일: 주간 리포트)")
@@ -1820,6 +1841,7 @@ if __name__ == "__main__":
     log.info("  ⏰ 13:00 → 장중 TP/SL 모니터링")
     log.info("  ⏰ 14:30 → 1차 스크리닝")
     log.info("  ⏰ 15:20 → 2차 재검증 + 텔레그램 + 자동매수")
+    log.info("  ⏰ 15:25 → 장마감 직전 TP/SL 모니터링")
     log.info(f"  🔑 KIS 모드: {'실전투자' if _KIS_MODE == 'real' else '모의투자'}")
     log.info(f"  🤖 자동매매: {'ON (종목당 ' + str(TRADE_AMOUNT_PER_STOCK) + '원)' if _auto_trade_enabled else 'OFF'}")
     log.info(f"  🎯 트레일링 스탑: HWM -{int(STRATEGY['trail_pct']*100)}%")

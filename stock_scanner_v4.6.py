@@ -1348,7 +1348,12 @@ def job_second_screen() -> None:
     else:
         send_telegram(msg)
         log.info("  텔레그램 발송 완료")
-        add_positions(verified)
+        # 자동매매 ON이면 실제 매수된 종목만 등록 (quantity=0 스킵)
+        to_register = [s for s in verified if not do_trade or s.get("quantity", 0) > 0]
+        skipped = len(verified) - len(to_register)
+        if skipped:
+            log.info(f"  [포지션 미등록] 매수 실패 {skipped}개 종목 제외")
+        add_positions(to_register)
 
 
 def _execute_buy_orders(verified: list[dict]) -> None:

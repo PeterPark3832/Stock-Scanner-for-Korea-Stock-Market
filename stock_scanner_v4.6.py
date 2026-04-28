@@ -149,7 +149,7 @@ STRATEGY = {
     "rsi_min":                   30,
     "use_price_range":           True,
     "price_range_pct":           0.70,
-    "trail_pct":                 0.03,
+    "trail_pct":                 0.05,
     "max_sector_count":          2,
     "drift_winrate_threshold":   0.40,
     "drift_weeks":               3,

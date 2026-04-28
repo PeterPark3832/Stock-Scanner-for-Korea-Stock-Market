@@ -218,6 +218,13 @@ def calc_signal_score(stock: dict) -> int:
 # ==========================================
 # 텔레그램
 # ==========================================
+def _esc(text: str) -> str:
+    """Markdown v1 특수문자 이스케이프 (종목명·동적 문자열에 적용)"""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def send_telegram(text: str, topic_id: int | None = None) -> None:
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS:
         log.warning("[WARN] 텔레그램 설정 없음 — .env 확인")
@@ -921,9 +928,14 @@ def job_monitor_positions() -> None:
             order_result = None
             if do_trade and qty > 0:
                 order_result = place_order(ticker, "sell", qty, name)
-            record_trade_history(p, cur, "TP")
-            tp_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "order": order_result})
-            log.info(f"  ✅ TP [{name}] {cur:,}원 ({pnl_pct:+.1f}%)")
+            if do_trade and qty > 0 and not (order_result or {}).get("success"):
+                # 자동매도 실패 → 포지션 유지, 이력 미기록
+                log.error(f"  [매도실패-유지] {name} TP 도달했으나 주문 실패 — 포지션 계속 추적")
+                remaining.append(p)
+            else:
+                record_trade_history(p, cur, "TP")
+                tp_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "order": order_result})
+                log.info(f"  ✅ TP [{name}] {cur:,}원 ({pnl_pct:+.1f}%)")
 
         elif cur <= sl:
             sl_init = p.get("sl_init", sl)
@@ -931,9 +943,14 @@ def job_monitor_positions() -> None:
             order_result = None
             if do_trade and qty > 0:
                 order_result = place_order(ticker, "sell", qty, name)
-            record_trade_history(p, cur, reason)
-            sl_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "sl_reason": reason, "order": order_result})
-            log.info(f"  🔴 SL [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {reason}")
+            if do_trade and qty > 0 and not (order_result or {}).get("success"):
+                # 자동매도 실패 → 포지션 유지, 이력 미기록
+                log.error(f"  [매도실패-유지] {name} SL 도달했으나 주문 실패 — 포지션 계속 추적")
+                remaining.append(p)
+            else:
+                record_trade_history(p, cur, reason)
+                sl_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "sl_reason": reason, "order": order_result})
+                log.info(f"  🔴 SL [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {reason}")
 
         else:
             trail_info = f" | HWM {hwm:,} → Trail SL {sl:,}" if hwm_updated else ""
@@ -950,7 +967,7 @@ def job_monitor_positions() -> None:
         for h in tp_hit:
             order_tag = _order_result_tag(h.get("order"), do_trade)
             msg += (
-                f"✅ *TP 달성* — {h['name']} ({h['ticker']})\n"
+                f"✅ *TP 달성* — {_esc(h['name'])} ({h['ticker']})\n"
                 f"  진입 {h['entry']:,}원 → 현재 *{h['cur']:,}원* ({h['pnl_pct']:+.1f}%)\n"
                 f"  TP {h['tp']:,}원 도달 확인{order_tag}\n\n"
             )
@@ -958,11 +975,11 @@ def job_monitor_positions() -> None:
             tag       = " 〔트레일링〕" if h.get("sl_reason") == "TRAIL_SL" else ""
             order_tag = _order_result_tag(h.get("order"), do_trade)
             msg += (
-                f"🔴 *SL 도달{tag}* — {h['name']} ({h['ticker']})\n"
+                f"🔴 *SL 도달{tag}* — {_esc(h['name'])} ({h['ticker']})\n"
                 f"  진입 {h['entry']:,}원 → 현재 *{h['cur']:,}원* ({h['pnl_pct']:+.1f}%)\n"
                 f"  SL {h['sl']:,}원{order_tag}\n\n"
             )
-        msg += f"_잔여 추적: {len(remaining)}개_"
+        msg += f"잔여 추적: {len(remaining)}개"
         send_telegram(msg)
         log.info(f"  알림 발송: TP {len(tp_hit)}개 SL {len(sl_hit)}개")
     else:
@@ -1346,15 +1363,24 @@ def _execute_buy_orders(verified: list[dict]) -> None:
 
     log.info(f"  [자동매수] 주문 가능 현금: {available:,}원 | 종목당 예산: {TRADE_AMOUNT_PER_STOCK:,}원")
 
+    existing_tickers = {p["ticker"] for p in load_positions()}
     remaining_cash = available
 
     for s in verified:
+        # 이미 보유 중인 종목 중복 매수 방지
+        if s["ticker"] in existing_tickers:
+            log.info(f"  [자동매수 스킵] {s['name']} — 이미 포지션 보유 중")
+            s["quantity"]    = 0
+            s["auto_traded"] = False
+            s["order_error"] = "이미 보유 중"
+            continue
+
         entry = s["entry"]
         budget = min(TRADE_AMOUNT_PER_STOCK, remaining_cash)
         qty = _calc_order_qty(entry, budget)
 
         if qty <= 0:
-            log.info(f"  [자동매수 스킵] {s['name']} — 예산 부족 또는 가격 과대 (잔여현금: {remaining_cash:,}원)")
+            log.info(f"  [자동매수 스킵] {s['name']} — 1주 가격({entry:,}원)이 예산({TRADE_AMOUNT_PER_STOCK:,}원) 초과 (잔여현금: {remaining_cash:,}원)")
             s["quantity"]    = 0
             s["auto_traded"] = False
             s["order_error"] = f"잔여현금 {remaining_cash:,}원 부족"
@@ -1406,14 +1432,14 @@ def _build_position_line(p: dict) -> str:
             status = f"{emoji} 보유 중 ({pnl_pct:+.1f}%) — 정리 검토"
 
         return (
-            f"• *{name}* ({ticker}){qty_str}\n"
+            f"• *{_esc(name)}* ({ticker}){qty_str}\n"
             f"  진입 {entry:,}원 → 현재 *{cur:,}원* | {days}일 경과\n"
             f"  TP {tp:,}원 / SL {sl:,}원{trail_tag}\n"
             f"  {status}\n"
         )
     else:
         return (
-            f"• *{name}* ({ticker}){qty_str}\n"
+            f"• *{_esc(name)}* ({ticker}){qty_str}\n"
             f"  진입 {entry:,}원 | {days}일 경과 ({edate} 진입)\n"
             f"  TP {tp:,}원 / SL {sl:,}원 ⚠️ 현재가 조회 실패\n"
         )
@@ -1442,8 +1468,15 @@ def job_heartbeat() -> None:
             exit_price = live["current"] if live else p.get("entry", 0)
 
             order_result = None
-            if do_trade and p.get("quantity", 0) > 0:
-                order_result = place_order(p["ticker"], "sell", p["quantity"], p["name"])
+            qty = p.get("quantity", 0)
+            if do_trade and qty > 0:
+                order_result = place_order(p["ticker"], "sell", qty, p["name"])
+
+            if do_trade and qty > 0 and not (order_result or {}).get("success"):
+                # 매도 실패 → 만료 처리 취소, active로 복귀
+                log.error(f"  [매도실패-유지] {p['name']} EXPIRE 주문 실패 — 포지션 유지")
+                active.append(p)
+                continue
 
             record_trade_history(p, exit_price, "EXPIRE")
 
@@ -1457,7 +1490,7 @@ def job_heartbeat() -> None:
             api_warn  = "" if live else " ⚠️ 현재가 조회 실패"
             order_tag = _order_result_tag(order_result, do_trade)
             expired_lines.append(
-                f"• *{p['name']}* ({p['ticker']})\n"
+                f"• *{_esc(p['name'])}* ({p['ticker']})\n"
                 f"  진입 {entry:,}원 → 최종 *{exit_price:,}원* ({pnl_pct:+.1f}%) | {days}일 경과\n"
                 f"  TP {tp:,}원 / SL {sl:,}원{trail_tag}\n"
                 f"  ⏰ 기간 만료 — 정리 검토{api_warn}\n"

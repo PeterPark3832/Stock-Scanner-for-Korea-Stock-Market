@@ -339,6 +339,44 @@ def api_backtest(token: str = ""):
         curve=hc["curve"], dates=hc["dates"])
     return JSONResponse(results)
 
+@app.get("/api/logs")
+def api_logs(token: str = "", lines: int = 100):
+    auth(token)
+    log_file = os.path.join(BASE_DIR, "scanner.log")
+    if not os.path.exists(log_file):
+        return JSONResponse({"lines": [], "error": "scanner.log 없음"})
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+        recent = [l.rstrip() for l in all_lines[-min(lines, len(all_lines)):]]
+        return JSONResponse({"lines": recent})
+    except Exception as e:
+        return JSONResponse({"lines": [], "error": str(e)})
+
+
+@app.post("/api/position/{ticker}/update")
+async def api_position_update(ticker: str, request: Request, token: str = ""):
+    auth(token)
+    body   = await request.json()
+    new_tp = int(body.get("tp", 0))
+    new_sl = int(body.get("sl", 0))
+    if new_tp <= 0 or new_sl <= 0 or new_sl >= new_tp:
+        return JSONResponse({"ok": False, "msg": "TP > SL > 0 이어야 합니다"}, status_code=400)
+    positions = load_positions()
+    p = next((x for x in positions if x["ticker"] == ticker), None)
+    if not p:
+        return JSONResponse({"ok": False, "msg": "포지션 없음"}, status_code=404)
+    old_tp, old_sl = p["tp"], p["sl"]
+    p["tp"] = new_tp
+    p["sl"] = new_sl
+    save_positions(positions)
+    send_telegram(
+        f"🖥️ *대시보드 TP/SL 수정*\n{p['name']}({ticker})\n"
+        f"TP: {old_tp:,} → {new_tp:,}원\nSL: {old_sl:,} → {new_sl:,}원"
+    )
+    return JSONResponse({"ok": True, "msg": f"{p['name']} TP/SL 수정 완료"})
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(token: str = ""):
     auth(token)
@@ -428,6 +466,11 @@ HTML = r"""<!DOCTYPE html>
   ::-webkit-scrollbar-track{background:transparent}
   ::-webkit-scrollbar-thumb{background:#30363d;border-radius:99px}
 
+  /* 로그 뷰어 */
+  .log-line{font-family:'Courier New',monospace;font-size:11px;line-height:1.6;
+            white-space:pre-wrap;word-break:break-all;padding:1px 0}
+  .log-err{color:#f85149}.log-warn{color:#e3b341}.log-ok{color:#3fb950}.log-info{color:#6e7681}
+
   /* 토스트 */
   #toast{position:fixed;bottom:72px;left:50%;transform:translateX(-50%);padding:10px 18px;
          border-radius:10px;font-size:13px;font-weight:500;z-index:200;opacity:0;
@@ -478,6 +521,12 @@ HTML = r"""<!DOCTYPE html>
         <path stroke-linecap="round" stroke-linejoin="round"
           d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
       </svg>백테스트 분석
+    </button>
+    <button class="sb-item" data-tab="logs" onclick="switchTab('logs');loadLogs()">
+      <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+        <path stroke-linecap="round" stroke-linejoin="round"
+          d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>로그
     </button>
   </nav>
 
@@ -621,8 +670,61 @@ HTML = r"""<!DOCTYPE html>
       <div id="btInsight" class="card p-4"></div>
     </div>
 
+    <!-- ⑤ 로그 뷰어 ────────────────────────────────────────── -->
+    <div id="tab-logs" class="tab-panel">
+      <div class="flex items-center justify-between mb-3 mt-1">
+        <div class="flex items-center gap-2">
+          <p class="text-sm font-semibold">봇 로그</p>
+          <select id="logLines" onchange="loadLogs(this.value)"
+                  class="text-xs px-2 py-1 rounded"
+                  style="background:#21262d;color:#8b949e;border:1px solid #30363d">
+            <option value="50">50줄</option>
+            <option value="100" selected>100줄</option>
+            <option value="200">200줄</option>
+          </select>
+        </div>
+        <button class="btn-sm" onclick="loadLogs(document.getElementById('logLines').value)">↻</button>
+      </div>
+      <div class="card overflow-hidden">
+        <div id="logContent" class="p-3 overflow-y-auto" style="max-height:65vh;background:#0d1117">
+          <p class="log-line log-info">로그 탭을 클릭하면 로딩됩니다.</p>
+        </div>
+      </div>
+    </div>
+
   </div><!-- /px-3 -->
 </div><!-- /md:ml-56 -->
+
+<!-- TP/SL 수정 모달 -->
+<div id="editModal" class="hidden fixed inset-0 z-50 flex items-center justify-center px-4"
+     style="background:rgba(0,0,0,.75)" onclick="if(event.target===this)closeEditModal()">
+  <div class="card p-5 w-full max-w-sm">
+    <h3 class="font-semibold text-white mb-0.5" id="editModalTitle">TP/SL 수정</h3>
+    <p class="text-xs mb-4" style="color:#484f58" id="editModalSub">—</p>
+    <div class="space-y-3 mb-4">
+      <div>
+        <label class="text-xs mb-1 block" style="color:#8b949e">목표가 TP (원)</label>
+        <input id="editTP" type="number"
+               class="w-full px-3 py-2 rounded-lg text-white text-sm outline-none"
+               style="background:#21262d;border:1px solid #30363d"
+               onfocus="this.style.borderColor='#58a6ff'" onblur="this.style.borderColor='#30363d'">
+      </div>
+      <div>
+        <label class="text-xs mb-1 block" style="color:#8b949e">손절가 SL (원)</label>
+        <input id="editSL" type="number"
+               class="w-full px-3 py-2 rounded-lg text-white text-sm outline-none"
+               style="background:#21262d;border:1px solid #30363d"
+               onfocus="this.style.borderColor='#58a6ff'" onblur="this.style.borderColor='#30363d'">
+      </div>
+      <p id="editInfo" class="text-xs" style="color:#484f58">진입가 대비 비율이 표시됩니다</p>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn-sm flex-1" onclick="closeEditModal()">취소</button>
+      <button onclick="submitEdit()" class="flex-1 py-2 rounded-lg text-sm font-semibold"
+              style="background:#238636;color:white;border:none;cursor:pointer">저장</button>
+    </div>
+  </div>
+</div>
 
 <!-- ══ 모바일 하단 탭 네비 ═══════════════════════════════════ -->
 <nav class="md:hidden fixed bottom-0 left-0 right-0 flex z-30"
@@ -650,6 +752,12 @@ HTML = r"""<!DOCTYPE html>
       <path stroke-linecap="round" stroke-linejoin="round"
         d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
     </svg>분석
+  </button>
+  <button class="tab-btn" data-tab="logs" onclick="switchTab('logs');loadLogs()">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+      <path stroke-linecap="round" stroke-linejoin="round"
+        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+    </svg>로그
   </button>
 </nav>
 
@@ -891,8 +999,12 @@ function renderPositionCards(positions) {
       </div>
       <div class="flex items-center justify-between">
         <p class="text-xs" style="color:#484f58">${p.entry_date}</p>
-        <button id="sell-${p.ticker}" class="btn-sell" ${p.quantity>0?'':'disabled'}
-          onclick="sellPosition('${p.ticker}',${p.quantity},'${p.name}',${p.entry})">즉시 청산</button>
+        <div class="flex gap-1.5">
+          <button class="btn-sm text-xs px-2 py-1"
+            onclick="openEditModal('${p.ticker}','${p.name}',${p.tp},${p.sl},${p.entry})">✏️ TP/SL</button>
+          <button id="sell-${p.ticker}" class="btn-sell" ${p.quantity>0?'':'disabled'}
+            onclick="sellPosition('${p.ticker}',${p.quantity},'${p.name}',${p.entry})">즉시 청산</button>
+        </div>
       </div>
     </div>`;
   }).join('');
@@ -910,7 +1022,7 @@ function renderPositionTableEl(positions) {
     <thead><tr>
       <th>종목</th><th>현재가</th><th>PnL</th>
       <th style="min-width:140px">SL ──── 현재 ──── TP</th>
-      <th>진입가</th><th>TP</th><th>SL</th><th>수량</th><th>진입일</th><th></th>
+      <th>진입가</th><th>TP</th><th>SL</th><th>수량</th><th>진입일</th><th>관리</th>
     </tr></thead>
     <tbody>
     ${positions.map(p => {
@@ -935,8 +1047,12 @@ function renderPositionTableEl(positions) {
         <td class="red">${fmt(p.sl)}</td>
         <td style="color:#8b949e">${p.quantity||'—'}</td>
         <td style="color:#484f58">${p.entry_date}</td>
-        <td><button id="sell-${p.ticker}-dt" class="btn-sell" ${p.quantity>0?'':'disabled'}
-          onclick="sellPosition('${p.ticker}',${p.quantity},'${p.name}',${p.entry})">청산</button></td>
+        <td class="flex gap-1.5 items-center">
+          <button class="btn-sm text-xs px-2 py-1"
+            onclick="openEditModal('${p.ticker}','${p.name}',${p.tp},${p.sl},${p.entry})">✏️</button>
+          <button id="sell-${p.ticker}-dt" class="btn-sell" ${p.quantity>0?'':'disabled'}
+            onclick="sellPosition('${p.ticker}',${p.quantity},'${p.name}',${p.entry})">청산</button>
+        </td>
       </tr>`;
     }).join('')}
     </tbody>
@@ -1082,6 +1198,71 @@ function renderBacktest(d) {
     insight = `<p class="text-sm" style="color:#484f58">백테스트 파일을 찾을 수 없습니다.</p>`;
   }
   document.getElementById('btInsight').innerHTML = insight;
+}
+
+// ── TP/SL 수정 모달 ────────────────────────────────────────
+let _eTicker = '', _eName = '', _eEntry = 0;
+
+function openEditModal(ticker, name, tp, sl, entry) {
+  _eTicker = ticker; _eName = name; _eEntry = entry;
+  document.getElementById('editModalTitle').textContent = name + ' TP/SL 수정';
+  document.getElementById('editModalSub').textContent = `${ticker} | 진입가 ${fmt(entry)}원`;
+  document.getElementById('editTP').value = tp;
+  document.getElementById('editSL').value = sl;
+  updateEditInfo();
+  document.getElementById('editModal').classList.remove('hidden');
+}
+function updateEditInfo() {
+  const tp = parseInt(document.getElementById('editTP').value)||0;
+  const sl = parseInt(document.getElementById('editSL').value)||0;
+  if (_eEntry && tp && sl) {
+    const upPct   = ((tp - _eEntry)/_eEntry*100).toFixed(1);
+    const downPct = ((_eEntry - sl)/_eEntry*100).toFixed(1);
+    document.getElementById('editInfo').textContent =
+      `TP +${upPct}% / SL -${downPct}% (진입가 ${fmt(_eEntry)}원 기준)`;
+  }
+}
+['editTP','editSL'].forEach(id =>
+  document.getElementById(id)?.addEventListener('input', updateEditInfo));
+
+function closeEditModal() {
+  document.getElementById('editModal').classList.add('hidden');
+}
+async function submitEdit() {
+  const tp = parseInt(document.getElementById('editTP').value);
+  const sl = parseInt(document.getElementById('editSL').value);
+  if (!tp || !sl || sl >= tp) { toast('TP는 SL보다 커야 합니다', false); return; }
+  try {
+    const d = await (await fetch(`/api/position/${_eTicker}/update?token=${TOKEN}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tp, sl})
+    })).json();
+    toast(d.msg, d.ok);
+    if (d.ok) { closeEditModal(); setTimeout(loadData, 500); }
+  } catch(e) { toast('연결 오류', false); }
+}
+
+// ── 로그 뷰어 ────────────────────────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+async function loadLogs(lines) {
+  lines = lines || document.getElementById('logLines')?.value || 100;
+  const el = document.getElementById('logContent');
+  if (!el) return;
+  el.innerHTML = '<p class="log-line log-info">로딩 중…</p>';
+  try {
+    const d = await (await fetch(`/api/logs?token=${TOKEN}&lines=${lines}`)).json();
+    if (d.error) { el.innerHTML = `<p class="log-line log-err">${d.error}</p>`; return; }
+    el.innerHTML = d.lines.map(l => {
+      let cls = 'log-info';
+      if (l.includes('[ERROR]') || l.includes('실패') || l.includes('오류')) cls = 'log-err';
+      else if (l.includes('[WARNING]') || l.includes('WARN'))  cls = 'log-warn';
+      else if (l.includes('완료') || l.includes('✅') || l.includes('[주문완료]')) cls = 'log-ok';
+      return `<div class="log-line ${cls}">${escHtml(l)}</div>`;
+    }).join('');
+    el.scrollTop = el.scrollHeight;
+  } catch(e) { el.innerHTML = '<p class="log-line log-err">로그 로드 실패</p>'; }
 }
 
 loadData();

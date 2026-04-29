@@ -173,11 +173,7 @@ async def dashboard(token: str = ""):
     auth(token)
     return HTMLResponse(HTML.replace("__TOKEN__", token))
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8081)
-
-# ── HTML ──────────────────────────────────────────────────────
+# ── HTML (라우터보다 먼저 정의) ──────────────────────────────────
 HTML = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -591,3 +587,7 @@ setInterval(loadData, 60000);
 </script>
 </body>
 </html>"""
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8081)

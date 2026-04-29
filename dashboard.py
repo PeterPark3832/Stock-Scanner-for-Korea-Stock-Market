@@ -61,7 +61,8 @@ _token_cache      = {"token": None, "expires_at": 0}
 _token_lock       = threading.Lock()
 _file_lock        = threading.Lock()   # 대시보드 내부 스레드용
 _cache_lock       = threading.Lock()   # _hist_cache race condition 방지
-_POSITIONS_FLOCK  = FileLock(os.path.join(BASE_DIR, "positions.json.lock"), timeout=5)
+_POSITIONS_FLOCK  = FileLock(os.path.join(BASE_DIR, "positions.json.lock"),     timeout=5)
+_HISTORY_FLOCK    = FileLock(os.path.join(BASE_DIR, "trade_history.csv.lock"),  timeout=5)
 
 def get_kis_token() -> str | None:
     with _token_lock:
@@ -132,11 +133,11 @@ def save_positions(positions: list[dict]) -> None:
             json.dump(positions, f, ensure_ascii=False, indent=2)
 
 def append_history(row: dict) -> None:
-    with _file_lock:                     # 대시보드 내부 스레드 직렬화
-        fieldnames = ["ticker","name","sector","entry_date","exit_date",
-                      "entry_price","exit_price","quantity","pnl_pct",
-                      "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
-        exists = os.path.exists(HISTORY_FILE)
+    fieldnames = ["ticker","name","sector","entry_date","exit_date",
+                  "entry_price","exit_price","quantity","pnl_pct",
+                  "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
+    exists = os.path.exists(HISTORY_FILE)
+    with _HISTORY_FLOCK:                 # 크로스 프로세스 락
         with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
             if not exists:

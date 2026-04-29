@@ -82,8 +82,9 @@ log = _setup_logger()
 # ==========================================
 # 파일 경로 상수
 # ==========================================
-POSITIONS_FILE     = "positions.json"
-TRADE_HISTORY_FILE = "trade_history.csv"
+_BASE_DIR          = os.path.dirname(os.path.abspath(__file__))
+POSITIONS_FILE     = os.path.join(_BASE_DIR, "positions.json")
+TRADE_HISTORY_FILE = os.path.join(_BASE_DIR, "trade_history.csv")
 
 # ==========================================
 # 공휴일 캘린더
@@ -169,7 +170,8 @@ _tg_update_offset: int = 0
 _offset_lock = threading.Lock()
 
 _file_lock       = threading.Lock()
-_POSITIONS_FLOCK = FileLock(POSITIONS_FILE + ".lock", timeout=5)
+_POSITIONS_FLOCK = FileLock(POSITIONS_FILE     + ".lock", timeout=5)
+_HISTORY_FLOCK   = FileLock(TRADE_HISTORY_FILE + ".lock", timeout=5)
 
 _shutdown_event = threading.Event()
 
@@ -639,11 +641,12 @@ def record_trade_history(p: dict, exit_price: int, exit_reason: str) -> None:
     }
     file_exists = os.path.exists(TRADE_HISTORY_FILE)
     try:
-        with open(TRADE_HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow(row)
+        with _HISTORY_FLOCK:
+            with open(TRADE_HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                if not file_exists:
+                    writer.writeheader()
+                writer.writerow(row)
         log.info(f"  [이력] {row['name']} ({exit_reason}) {pnl_pct:+.2f}% 기록 완료")
     except Exception as e:
         log.error(f"  이력 기록 실패 ({p['ticker']}): {e}")

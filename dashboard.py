@@ -268,8 +268,8 @@ HTML_TEMPLATE = """<!DOCTYPE html>
           <p class="text-sm text-white font-medium">{{ h.name }}</p>
           <p class="text-xs text-slate-500">{{ h.exit_date }} · {{ h.exit_reason }}</p>
         </div>
-        <p class="font-bold text-sm {{ 'up' if float(h.pnl_pct) > 0 else 'down' }}">
-          {{ '+' if float(h.pnl_pct) > 0 else '' }}{{ h.pnl_pct }}%
+        <p class="font-bold text-sm {{ 'up' if h.pnl_pct_f > 0 else 'down' }}">
+          {{ '+' if h.pnl_pct_f > 0 else '' }}{{ h.pnl_pct }}%
         </p>
       </div>
       {% endfor %}
@@ -338,8 +338,11 @@ async def dashboard(request: Request, token: str = ""):
     # 현재가 조회 (KIS)
     positions_live = build_positions_with_live(positions_raw)
 
-    # 최근 20건 역순
-    recent_history = list(reversed(history_raw[-20:]))
+    # 최근 20건 역순 (pnl_pct float 변환)
+    recent_history = [
+        {**r, "pnl_pct_f": float(r["pnl_pct"])}
+        for r in reversed(history_raw[-20:])
+    ]
 
     # 차트 데이터 (최근 30건)
     chart_rows   = history_raw[-30:]

@@ -5,3 +5,4 @@ schedule
 python-dotenv
 holidays
 pytz
+filelock

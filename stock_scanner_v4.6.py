@@ -39,6 +39,7 @@ import signal
 import time
 import threading
 import requests
+from filelock import FileLock
 from requests.exceptions import ReadTimeout, ConnectionError as RequestsConnectionError
 import schedule
 import holidays
@@ -167,7 +168,8 @@ _signals_lock = threading.Lock()
 _tg_update_offset: int = 0
 _offset_lock = threading.Lock()
 
-_file_lock = threading.Lock()
+_file_lock       = threading.Lock()
+_POSITIONS_FLOCK = FileLock(POSITIONS_FILE + ".lock", timeout=5)
 
 _shutdown_event = threading.Event()
 
@@ -781,7 +783,7 @@ def _count_weekdays(start: datetime, end: datetime) -> int:
     return days
 
 def load_positions() -> list[dict]:
-    with _file_lock:
+    with _POSITIONS_FLOCK:
         if not os.path.exists(POSITIONS_FILE):
             return []
         try:
@@ -792,7 +794,7 @@ def load_positions() -> list[dict]:
             return []
 
 def save_positions(positions: list[dict]) -> None:
-    with _file_lock:
+    with _POSITIONS_FLOCK:
         try:
             with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
                 json.dump(positions, f, ensure_ascii=False, indent=2)
@@ -1808,6 +1810,27 @@ def _safe_run(fn, label: str) -> None:
 
 
 # ==========================================
+# ==========================================
+# 대시보드 제어 플래그 체크 (매 1초 루프)
+# ==========================================
+def _check_dashboard_flags() -> None:
+    global _pause_signals
+    _BASE = os.path.dirname(os.path.abspath(__file__))
+    for flag, state, label in [
+        (os.path.join(_BASE, "_pause.flag"),  True,  "⏸ 신호 정지 (대시보드 명령)"),
+        (os.path.join(_BASE, "_resume.flag"), False, "▶️ 신호 재개 (대시보드 명령)"),
+    ]:
+        if os.path.exists(flag):
+            try:
+                os.remove(flag)
+            except OSError:
+                pass
+            with _signals_lock:
+                _pause_signals = state
+            log.info(f"[대시보드] {label}")
+            send_telegram(f"{'⏸' if state else '▶️'} *{label}*")
+
+
 # Graceful shutdown 핸들러
 # ==========================================
 def _handle_shutdown(signum, frame) -> None:
@@ -1870,6 +1893,7 @@ if __name__ == "__main__":
 
     while not _shutdown_event.is_set():
         schedule.run_pending()
+        _check_dashboard_flags()
         _shutdown_event.wait(timeout=1)
 
     log.info("[shutdown] 봇 종료 완료")

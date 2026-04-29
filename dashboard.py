@@ -8,6 +8,7 @@ Stock Scanner Dashboard v2.1
 import csv, json, os, re, subprocess, threading, time, requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from filelock import FileLock
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -56,9 +57,11 @@ def _kis_base() -> str:
 DASHBOARD_TOKEN = read_env("DASHBOARD_TOKEN", "scanner2024")
 
 # ── KIS 토큰 캐시 ─────────────────────────────────────────────
-_token_cache: dict = {"token": None, "expires_at": 0}
-_token_lock  = threading.Lock()
-_file_lock   = threading.Lock()
+_token_cache      = {"token": None, "expires_at": 0}
+_token_lock       = threading.Lock()
+_file_lock        = threading.Lock()   # 대시보드 내부 스레드용
+_cache_lock       = threading.Lock()   # _hist_cache race condition 방지
+_POSITIONS_FLOCK  = FileLock(os.path.join(BASE_DIR, "positions.json.lock"), timeout=5)
 
 def get_kis_token() -> str | None:
     with _token_lock:
@@ -116,7 +119,7 @@ def send_telegram(text: str) -> None:
 
 # ── 파일 I/O ──────────────────────────────────────────────────
 def load_positions() -> list[dict]:
-    with _file_lock:
+    with _POSITIONS_FLOCK:
         try:
             with open(POSITIONS_FILE, encoding="utf-8") as f:
                 return json.load(f)
@@ -124,12 +127,12 @@ def load_positions() -> list[dict]:
             return []
 
 def save_positions(positions: list[dict]) -> None:
-    with _file_lock:
+    with _POSITIONS_FLOCK:               # 크로스 프로세스 락
         with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(positions, f, ensure_ascii=False, indent=2)
 
 def append_history(row: dict) -> None:
-    with _file_lock:
+    with _file_lock:                     # 대시보드 내부 스레드 직렬화
         fieldnames = ["ticker","name","sector","entry_date","exit_date",
                       "entry_price","exit_price","quantity","pnl_pct",
                       "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
@@ -144,47 +147,48 @@ def append_history(row: dict) -> None:
 _hist_cache: dict = {"mtime": -1, "rows": [], "stats": {}, "dates": [], "curve": [], "reasons": {}}
 
 def get_history_cached() -> dict:
-    try:
-        mtime = os.path.getmtime(HISTORY_FILE)
-    except FileNotFoundError:
+    with _cache_lock:                        # ③ race condition 방지
+        try:
+            mtime = os.path.getmtime(HISTORY_FILE)
+        except FileNotFoundError:
+            return _hist_cache
+        if mtime == _hist_cache["mtime"]:
+            return _hist_cache
+
+        rows = []
+        try:
+            with open(HISTORY_FILE, encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+        except Exception:
+            pass
+
+        wins = [r for r in rows if float(r["pnl_pct"]) > 0]
+        loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
+        gw   = sum(float(r["pnl_pct"]) for r in wins)
+        gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
+        stats = dict(
+            total    = len(rows),
+            wins     = len(wins),
+            losses   = len(loss),
+            win_rate = round(len(wins)/len(rows)*100, 1) if rows else 0.0,
+            avg_win  = round(gw/len(wins), 2) if wins else 0.0,
+            avg_loss = round(-gl/len(loss), 2) if loss else 0.0,
+            pf       = round(gw/gl, 2) if gl else 0.0,
+            cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows), 2),
+        )
+        cum, dates, curve = 0.0, [], []
+        for r in rows:
+            cum += float(r["pnl_pct"])
+            curve.append(round(cum, 2))
+            dates.append(r["exit_date"][5:])
+
+        reasons: dict[str, int] = {}
+        for r in rows:
+            reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
+
+        _hist_cache.update(mtime=mtime, rows=rows, stats=stats,
+                           dates=dates, curve=curve, reasons=reasons)
         return _hist_cache
-    if mtime == _hist_cache["mtime"]:
-        return _hist_cache
-
-    rows = []
-    try:
-        with open(HISTORY_FILE, encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-    except Exception:
-        pass
-
-    wins = [r for r in rows if float(r["pnl_pct"]) > 0]
-    loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
-    gw   = sum(float(r["pnl_pct"]) for r in wins)
-    gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
-    stats = dict(
-        total    = len(rows),
-        wins     = len(wins),
-        losses   = len(loss),
-        win_rate = round(len(wins)/len(rows)*100, 1) if rows else 0.0,
-        avg_win  = round(gw/len(wins), 2) if wins else 0.0,
-        avg_loss = round(-gl/len(loss), 2) if loss else 0.0,
-        pf       = round(gw/gl, 2) if gl else 0.0,
-        cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows), 2),
-    )
-    cum, dates, curve = 0.0, [], []
-    for r in rows:
-        cum += float(r["pnl_pct"])
-        curve.append(round(cum, 2))
-        dates.append(r["exit_date"][5:])
-
-    reasons: dict[str, int] = {}
-    for r in rows:
-        reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
-
-    _hist_cache.update(mtime=mtime, rows=rows, stats=stats,
-                       dates=dates, curve=curve, reasons=reasons)
-    return _hist_cache
 
 def enrich_positions(positions: list[dict]) -> list[dict]:
     result = []
@@ -333,6 +337,66 @@ async def api_sell(ticker: str, request: Request, token: str = ""):
             f"주문번호: {result['order_no']} | PnL: {pnl:+.2f}%"
         )
     return JSONResponse({"ok": True, "order_no": result["order_no"]})
+
+@app.get("/api/backtest")
+def api_backtest(token: str = ""):
+    auth(token)
+    results = {}
+    for fname, label, strategy_kw in [
+        ("backtest_results.csv",    "v1",  "A_눌림목"),
+        ("backtest_v2_results.csv", "v2",  "A_눌림목v2"),
+    ]:
+        path = os.path.join(BASE_DIR, fname)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                rows = [r for r in csv.DictReader(f)
+                        if strategy_kw in r.get("strategy", "")]
+        except Exception:
+            continue
+        if not rows:
+            continue
+        wins = [r for r in rows if float(r["pnl_pct"]) > 0]
+        loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
+        gw   = sum(float(r["pnl_pct"]) for r in wins)
+        gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
+        # 에쿼티 커브
+        cum, curve, dates = 0.0, [], []
+        for r in rows:
+            cum += float(r["pnl_pct"])
+            curve.append(round(cum, 2))
+            dates.append(r["exit_date"][5:] if r.get("exit_date") else "")
+        results[label] = dict(
+            label    = f"백테스트 {label} ({strategy_kw})",
+            total    = len(rows),
+            wins     = len(wins),
+            losses   = len(loss),
+            win_rate = round(len(wins)/len(rows)*100, 1) if rows else 0.0,
+            avg_win  = round(gw/len(wins), 2) if wins else 0.0,
+            avg_loss = round(-gl/len(loss), 2) if loss else 0.0,
+            pf       = round(gw/gl, 2) if gl else 0.0,
+            cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows), 2),
+            curve    = curve,
+            dates    = dates,
+        )
+    # 실거래 데이터도 함께 반환
+    hc = get_history_cached()
+    results["live"] = dict(
+        label    = "실거래",
+        total    = hc["stats"].get("total", 0),
+        wins     = hc["stats"].get("wins", 0),
+        losses   = hc["stats"].get("losses", 0),
+        win_rate = hc["stats"].get("win_rate", 0.0),
+        avg_win  = hc["stats"].get("avg_win", 0.0),
+        avg_loss = hc["stats"].get("avg_loss", 0.0),
+        pf       = hc["stats"].get("pf", 0.0),
+        cum_pct  = hc["stats"].get("cum_pct", 0.0),
+        curve    = hc["curve"],
+        dates    = hc["dates"],
+    )
+    return JSONResponse(results)
+
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(token: str = ""):
@@ -488,6 +552,25 @@ HTML = r"""<!DOCTYPE html>
     <div id="historyList" class="space-y-1.5 mt-1"></div>
   </div>
 
+  <!-- ④ 백테스트 분석 -->
+  <div id="tab-backtest" class="tab-panel">
+    <!-- 비교 차트 -->
+    <div class="card p-4 mb-3">
+      <div class="flex items-center justify-between mb-3">
+        <p class="text-sm font-semibold">에쿼티 커브 비교</p>
+        <div class="flex gap-2 text-xs">
+          <span style="color:#58a6ff">■ 백테스트</span>
+          <span style="color:#3fb950">■ 실거래</span>
+        </div>
+      </div>
+      <div style="height:180px"><canvas id="btCompareChart"></canvas></div>
+    </div>
+    <!-- 지표 비교 테이블 -->
+    <div id="btStatsCards" class="space-y-2 mb-3"></div>
+    <!-- 해석 카드 -->
+    <div id="btInsight" class="card p-4"></div>
+  </div>
+
 </div>
 
 <!-- 하단 탭 네비 -->
@@ -510,6 +593,12 @@ HTML = r"""<!DOCTYPE html>
       <path stroke-linecap="round" stroke-linejoin="round"
         d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
     </svg>이력
+  </button>
+  <button class="tab-btn" onclick="switchTab('backtest',this);loadBacktest()">
+    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+      <path stroke-linecap="round" stroke-linejoin="round"
+        d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+    </svg>분석
   </button>
 </nav>
 
@@ -566,13 +655,27 @@ async function ctrlAction(action) {
 }
 
 async function toggleAutoTrade(on) {
+  // ④ 재시작 경고: 장중(9~15:30 KST) 변경 시 알림
+  const now = new Date();
+  const kst = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Seoul'}));
+  const h = kst.getHours(), m = kst.getMinutes();
+  const inMarket = (h > 9 || (h === 9 && m >= 0)) && (h < 15 || (h === 15 && m < 30));
+  if (inMarket) {
+    const ok = confirm(
+      `⚠️ 장중 자동매매 ${on?'활성화':'비활성화'}\n\n` +
+      `봇이 재시작됩니다. 현재 14:30~15:20 스캔 중이라면\n` +
+      `해당 사이클이 중단될 수 있습니다.\n\n계속하시겠습니까?`
+    );
+    if (!ok) {
+      document.getElementById('atToggle').checked = !on;
+      return;
+    }
+  }
   document.getElementById('atToggle').disabled = true;
   try {
-    const action = on ? 'autotrade_on' : 'autotrade_off';
     const r = await fetch(`/api/control?token=${TOKEN}`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({action})
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action: on ? 'autotrade_on' : 'autotrade_off'})
     });
     const d = await r.json();
     toast(d.msg, d.ok);
@@ -581,7 +684,7 @@ async function toggleAutoTrade(on) {
     toast('연결 오류', false);
     document.getElementById('atToggle').checked = !on;
   } finally {
-    setTimeout(() => document.getElementById('atToggle').disabled = false, 4000);
+    setTimeout(() => document.getElementById('atToggle').disabled = false, 4500);
   }
 }
 
@@ -777,6 +880,126 @@ function renderHistory(history) {
       <span class="font-bold text-base ${pc} shrink-0">${fmtP(h.pnl_pct)}</span>
     </div>`;
   }).join('');
+}
+
+// ── Phase 3: 백테스트 비교 ────────────────────────────────────
+let btChart = null, btLoaded = false;
+
+async function loadBacktest() {
+  if (btLoaded) return;
+  document.getElementById('btStatsCards').innerHTML =
+    `<p class="text-center text-sm py-4" style="color:#484f58">로딩 중…</p>`;
+  try {
+    const d = await (await fetch(`/api/backtest?token=${TOKEN}`)).json();
+    renderBacktest(d);
+    btLoaded = true;
+  } catch(e) {
+    document.getElementById('btStatsCards').innerHTML =
+      `<p class="text-center text-sm py-4 red">로드 실패</p>`;
+  }
+}
+
+function renderBacktest(d) {
+  // 비교 차트 (백테스트 + 실거래)
+  const ctx = document.getElementById('btCompareChart').getContext('2d');
+  if (btChart) btChart.destroy();
+  const datasets = [];
+  const colorMap = {v1:'#58a6ff', v2:'#79c0ff', live:'#3fb950'};
+  for (const [key, val] of Object.entries(d)) {
+    if (!val.curve?.length) continue;
+    datasets.push({
+      label: val.label,
+      data: val.curve,
+      borderColor: colorMap[key] || '#8b949e',
+      backgroundColor: 'transparent',
+      borderWidth: key === 'live' ? 2.5 : 1.5,
+      pointRadius: 0,
+      tension: 0.3,
+      borderDash: key === 'live' ? [] : [4, 3],
+    });
+  }
+  btChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { display: true, position: 'bottom',
+          labels: { color: '#8b949e', font: { size: 11 }, boxWidth: 20 }
+        },
+        tooltip: { callbacks: { label: c => `${c.dataset.label}: ${fmtP(c.parsed.y)}` }}
+      },
+      scales: {
+        x: { display: false },
+        y: { ticks: { color: '#8b949e', font: { size: 10 }, callback: v => v+'%' },
+             grid: { color: 'rgba(33,38,45,.8)' }}
+      }
+    }
+  });
+
+  // 지표 비교 카드
+  const metrics = [
+    {key:'total',    label:'총 거래',   fmt: v => v+'건'},
+    {key:'win_rate', label:'승률',      fmt: v => v+'%', clrFn: v => v>=50?'green':v>=40?'blue':'red'},
+    {key:'pf',       label:'Profit Factor', fmt: v => v, clrFn: v => v>=1?'green':'red'},
+    {key:'avg_win',  label:'평균 수익', fmt: v => '+'+v+'%', clrFn: ()=>'green'},
+    {key:'avg_loss', label:'평균 손실', fmt: v => v+'%',     clrFn: ()=>'red'},
+    {key:'cum_pct',  label:'누적 합산', fmt: v => (v>=0?'+':'')+v+'%', clrFn: v=>v>=0?'green':'red'},
+  ];
+
+  const order   = ['live', 'v1', 'v2'].filter(k => d[k]);
+  const headers = order.map(k => d[k].label);
+
+  let html = `<div class="card overflow-hidden">
+    <div class="grid text-xs font-semibold py-2 px-3" style="grid-template-columns:1fr ${order.map(()=>'1fr').join(' ')};border-bottom:1px solid #21262d">
+      <span style="color:#484f58">지표</span>
+      ${headers.map(h=>`<span class="text-center" style="color:#8b949e">${h}</span>`).join('')}
+    </div>`;
+
+  for (const m of metrics) {
+    html += `<div class="grid text-sm py-2.5 px-3" style="grid-template-columns:1fr ${order.map(()=>'1fr').join(' ')};border-bottom:1px solid #161b22">
+      <span style="color:#8b949e">${m.label}</span>
+      ${order.map(k => {
+        const v = d[k]?.[m.key] ?? '—';
+        const cls = m.clrFn ? m.clrFn(v) : '';
+        return `<span class="text-center font-medium ${cls}">${v !== '—' ? m.fmt(v) : '—'}</span>`;
+      }).join('')}
+    </div>`;
+  }
+  html += '</div>';
+  document.getElementById('btStatsCards').innerHTML = html;
+
+  // 해석 인사이트
+  const live = d.live, bt = d.v2 || d.v1;
+  let insight = '';
+  if (live && bt) {
+    const pfDiff = ((live.pf - bt.pf) * 100).toFixed(0);
+    const wrDiff = (live.win_rate - bt.win_rate).toFixed(1);
+    const pfOk = live.pf >= bt.pf;
+    const wrOk = live.win_rate >= bt.win_rate;
+    insight = `
+      <p class="text-sm font-semibold mb-2">📌 전략 드리프트 진단</p>
+      <div class="space-y-1.5 text-xs">
+        <div class="flex justify-between">
+          <span style="color:#8b949e">실거래 PF vs 백테스트</span>
+          <span class="${pfOk?'green':'red'} font-medium">${pfOk?'▲ 우수':'▼ 열세'} (${live.pf} vs ${bt.pf})</span>
+        </div>
+        <div class="flex justify-between">
+          <span style="color:#8b949e">실거래 승률 vs 백테스트</span>
+          <span class="${wrOk?'green':'red'} font-medium">${wrOk?'▲ 우수':'▼ 열세'} (${live.win_rate}% vs ${bt.win_rate}%)</span>
+        </div>
+        <p class="mt-2" style="color:#484f58">
+          ${live.total < 30
+            ? '⚠️ 실거래 샘플('+live.total+'건)이 통계적 유의성(30건) 미달 — 추가 관찰 필요'
+            : pfOk && wrOk
+              ? '✅ 실거래가 백테스트 대비 우수 — 전략 작동 양호'
+              : '⚠️ 실거래 성과가 백테스트 하회 — 시장 변화 또는 파라미터 재검토 권장'}
+        </p>
+      </div>`;
+  } else {
+    insight = `<p class="text-sm" style="color:#484f58">백테스트 파일을 찾을 수 없습니다.</p>`;
+  }
+  document.getElementById('btInsight').innerHTML = insight;
 }
 
 loadData();

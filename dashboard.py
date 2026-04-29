@@ -1,106 +1,192 @@
 """
-Stock Scanner Dashboard v2.0
-FastAPI + Tailwind CSS + Chart.js — 모바일 최적화 프리미엄 재설계
+Stock Scanner Dashboard v2.1
+- ① async→sync: FastAPI thread-pool 실행 (이벤트 루프 블로킹 방지)
+- ② mtime 캐시: 파일 변경 시에만 재파싱
+- ③ Phase 1 제어: 자동매매 토글 / pause·resume / 포지션 즉시 청산
 접속: http://<서버IP>:8081?token=<DASHBOARD_TOKEN>
 """
-import csv, json, os, time, threading, requests
+import csv, json, os, re, subprocess, threading, time, requests
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-load_dotenv()
-
-KST            = ZoneInfo("Asia/Seoul")
-BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
+KST      = ZoneInfo("Asia/Seoul")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ENV_FILE = os.path.join(BASE_DIR, ".env")
 POSITIONS_FILE = os.path.join(BASE_DIR, "positions.json")
 HISTORY_FILE   = os.path.join(BASE_DIR, "trade_history.csv")
 
-KIS_APP_KEY    = os.getenv("KIS_APP_KEY", "")
-KIS_APP_SECRET = os.getenv("KIS_APP_SECRET", "")
-KIS_MODE       = os.getenv("KIS_MODE", "paper")
-KIS_BASE_URL   = ("https://openapi.koreainvestment.com:9443"
-                  if KIS_MODE == "real" else
-                  "https://openapivts.koreainvestment.com:29443")
-DASHBOARD_TOKEN    = os.getenv("DASHBOARD_TOKEN", "scanner2024")
-AUTO_TRADE         = os.getenv("AUTO_TRADE", "false").lower() == "true"
-TRADE_AMOUNT       = int(os.getenv("TRADE_AMOUNT_PER_STOCK", "200000"))
+# ── .env 직접 파싱 (runtime 최신값 보장) ──────────────────────
+def read_env(key: str, default: str = "") -> str:
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == key:
+                    return v.strip()
+    except Exception:
+        pass
+    return os.getenv(key, default)
 
+def write_env(key: str, value: str) -> None:
+    try:
+        with open(ENV_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+        pattern = rf"^{re.escape(key)}=.*$"
+        new_line = f"{key}={value}"
+        if re.search(pattern, content, re.MULTILINE):
+            content = re.sub(pattern, new_line, content, flags=re.MULTILINE)
+        else:
+            content += f"\n{new_line}"
+        with open(ENV_FILE, "w", encoding="utf-8") as f:
+            f.write(content)
+    except Exception as e:
+        raise RuntimeError(f".env 쓰기 실패: {e}")
+
+# ── 환경변수 ──────────────────────────────────────────────────
+def _kis_base() -> str:
+    return ("https://openapi.koreainvestment.com:9443"
+            if read_env("KIS_MODE","paper") == "real"
+            else "https://openapivts.koreainvestment.com:29443")
+
+DASHBOARD_TOKEN = read_env("DASHBOARD_TOKEN", "scanner2024")
+
+# ── KIS 토큰 캐시 ─────────────────────────────────────────────
 _token_cache: dict = {"token": None, "expires_at": 0}
-_token_lock = threading.Lock()
-app = FastAPI()
+_token_lock  = threading.Lock()
+_file_lock   = threading.Lock()
 
-# ── KIS ───────────────────────────────────────────────────────
-def get_token() -> str | None:
+def get_kis_token() -> str | None:
     with _token_lock:
         if _token_cache["token"] and time.time() < _token_cache["expires_at"] - 60:
             return _token_cache["token"]
     try:
-        r = requests.post(f"{KIS_BASE_URL}/oauth2/tokenP",
-            json={"grant_type":"client_credentials",
-                  "appkey":KIS_APP_KEY,"appsecret":KIS_APP_SECRET}, timeout=10)
+        r = requests.post(f"{_kis_base()}/oauth2/tokenP",
+            json={"grant_type": "client_credentials",
+                  "appkey":     read_env("KIS_APP_KEY"),
+                  "appsecret":  read_env("KIS_APP_SECRET")}, timeout=10)
         t = r.json().get("access_token")
         if t:
             with _token_lock:
-                _token_cache.update({"token":t,"expires_at":time.time()+86400})
+                _token_cache.update({"token": t, "expires_at": time.time() + 86400})
         return t
     except Exception:
         return None
 
 def get_price(ticker: str) -> dict | None:
-    token = get_token()
+    token = get_kis_token()
     if not token:
         return None
     try:
-        r = requests.get(f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers={"Authorization":f"Bearer {token}","appkey":KIS_APP_KEY,
-                     "appsecret":KIS_APP_SECRET,"tr_id":"FHKST01010100"},
-            params={"FID_COND_MRKT_DIV_CODE":"J","FID_INPUT_ISCD":ticker}, timeout=5)
+        r = requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers={"Authorization": f"Bearer {token}",
+                     "appkey":        read_env("KIS_APP_KEY"),
+                     "appsecret":     read_env("KIS_APP_SECRET"),
+                     "tr_id":         "FHKST01010100"},
+            params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker},
+            timeout=5)
         d = r.json()
         if d.get("rt_cd") == "0":
             o = d["output"]
-            return {"current": int(o.get("stck_prpr",0)),
-                    "change_pct": float(o.get("prdy_ctrt",0))}
+            return {"current": int(o.get("stck_prpr", 0))}
     except Exception:
         pass
     return None
 
-# ── 데이터 ────────────────────────────────────────────────────
-def load_positions() -> list[dict]:
-    try:
-        with open(POSITIONS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+# ── Telegram 발송 ─────────────────────────────────────────────
+def send_telegram(text: str) -> None:
+    token    = read_env("TELEGRAM_TOKEN")
+    chat_ids = [c.strip() for c in read_env("TELEGRAM_CHAT_IDS").split(",") if c.strip()]
+    topic_id = read_env("TELEGRAM_TOPIC_ID")
+    if not token or not chat_ids:
+        return
+    for cid in chat_ids:
+        try:
+            payload = {"chat_id": cid, "text": text, "parse_mode": "Markdown"}
+            if topic_id:
+                payload["message_thread_id"] = int(topic_id)
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          data=payload, timeout=5)
+        except Exception:
+            pass
 
-def load_history() -> list[dict]:
+# ── 파일 I/O ──────────────────────────────────────────────────
+def load_positions() -> list[dict]:
+    with _file_lock:
+        try:
+            with open(POSITIONS_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+
+def save_positions(positions: list[dict]) -> None:
+    with _file_lock:
+        with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(positions, f, ensure_ascii=False, indent=2)
+
+def append_history(row: dict) -> None:
+    with _file_lock:
+        fieldnames = ["ticker","name","sector","entry_date","exit_date",
+                      "entry_price","exit_price","quantity","pnl_pct",
+                      "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
+        exists = os.path.exists(HISTORY_FILE)
+        with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            if not exists:
+                w.writeheader()
+            w.writerow(row)
+
+# ── ② mtime 캐시 ──────────────────────────────────────────────
+_hist_cache: dict = {"mtime": -1, "rows": [], "stats": {}, "dates": [], "curve": [], "reasons": {}}
+
+def get_history_cached() -> dict:
+    try:
+        mtime = os.path.getmtime(HISTORY_FILE)
+    except FileNotFoundError:
+        return _hist_cache
+    if mtime == _hist_cache["mtime"]:
+        return _hist_cache
+
+    rows = []
     try:
         with open(HISTORY_FILE, encoding="utf-8") as f:
-            return list(csv.DictReader(f))
+            rows = list(csv.DictReader(f))
     except Exception:
-        return []
+        pass
 
-def calc_stats(rows):
-    if not rows:
-        return dict(total=0,wins=0,losses=0,win_rate=0.0,
-                    avg_win=0.0,avg_loss=0.0,pf=0.0,cum_pct=0.0)
     wins = [r for r in rows if float(r["pnl_pct"]) > 0]
     loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
     gw   = sum(float(r["pnl_pct"]) for r in wins)
     gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
-    return dict(
+    stats = dict(
         total    = len(rows),
         wins     = len(wins),
         losses   = len(loss),
-        win_rate = round(len(wins)/len(rows)*100, 1),
-        avg_win  = round(gw/len(wins),2) if wins else 0.0,
-        avg_loss = round(-gl/len(loss),2) if loss else 0.0,
-        pf       = round(gw/gl,2) if gl else 0.0,
-        cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows),2),
+        win_rate = round(len(wins)/len(rows)*100, 1) if rows else 0.0,
+        avg_win  = round(gw/len(wins), 2) if wins else 0.0,
+        avg_loss = round(-gl/len(loss), 2) if loss else 0.0,
+        pf       = round(gw/gl, 2) if gl else 0.0,
+        cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows), 2),
     )
+    cum, dates, curve = 0.0, [], []
+    for r in rows:
+        cum += float(r["pnl_pct"])
+        curve.append(round(cum, 2))
+        dates.append(r["exit_date"][5:])
 
-def enrich_positions(positions):
+    reasons: dict[str, int] = {}
+    for r in rows:
+        reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
+
+    _hist_cache.update(mtime=mtime, rows=rows, stats=stats,
+                       dates=dates, curve=curve, reasons=reasons)
+    return _hist_cache
+
+def enrich_positions(positions: list[dict]) -> list[dict]:
     result = []
     for p in positions:
         live  = get_price(p["ticker"])
@@ -109,71 +195,151 @@ def enrich_positions(positions):
         sl    = p.get("sl", 0)
         cur   = live["current"] if live else 0
         pnl   = round((cur - entry)/entry*100, 2) if entry and cur else None
-
-        # TP/SL 진행바: SL~TP 범위에서 현재가 위치 (0~100%)
-        rng   = tp - sl if tp > sl else 1
+        rng   = (tp - sl) if tp > sl else 1
         prog  = max(0, min(100, round((cur - sl)/rng*100))) if cur else 50
-
         result.append({**p,
             "current":     cur,
             "pnl_pct":     pnl,
             "progress":    prog,
-            "is_trailing": p.get("sl",0) > p.get("sl_init", p.get("sl",0)),
+            "is_trailing": p.get("sl", 0) > p.get("sl_init", p.get("sl", 0)),
             "live_ok":     live is not None,
         })
     return result
 
-# ── API 엔드포인트 ─────────────────────────────────────────────
+# ── ③ 즉시 청산 (Phase 1) ─────────────────────────────────────
+def dashboard_sell(ticker: str, qty: int, name: str) -> dict:
+    result = {"success": False, "order_no": "", "error": ""}
+    if qty <= 0:
+        result["error"] = "수량 0"
+        return result
+    token = get_kis_token()
+    if not token:
+        result["error"] = "KIS 토큰 발급 실패"
+        return result
+
+    kis_mode = read_env("KIS_MODE", "paper")
+    tr_id    = "TTTC0801U" if kis_mode == "real" else "VTTC0801U"
+    acno     = read_env("KIS_ACCOUNT_NO", "").replace("-", "").replace(" ", "")
+    cano, acnt = (acno[:8], acno[8:10]) if len(acno) >= 10 else (acno, "01")
+
+    body = {"CANO": cano, "ACNT_PRDT_CD": acnt, "PDNO": ticker,
+            "ORD_DVSN": "01", "ORD_QTY": str(qty), "ORD_UNPR": "0"}
+    try:
+        r = requests.post(f"{_kis_base()}/uapi/domestic-stock/v1/trading/order-cash",
+            headers={"content-type": "application/json",
+                     "authorization": f"Bearer {token}",
+                     "appkey":        read_env("KIS_APP_KEY"),
+                     "appsecret":     read_env("KIS_APP_SECRET"),
+                     "tr_id":         tr_id, "custtype": "P"},
+            json=body, timeout=15)
+        d = r.json()
+        if d.get("rt_cd") == "0":
+            result.update(success=True, order_no=d.get("output", {}).get("ODNO", ""))
+        else:
+            result["error"] = d.get("msg1", "주문 실패")
+    except Exception as e:
+        result["error"] = str(e)
+    return result
+
+# ── FastAPI ────────────────────────────────────────────────────
+app = FastAPI()
+
 def auth(token: str):
     if token != DASHBOARD_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+# ① async → def (FastAPI가 thread-pool에서 실행)
 @app.get("/api/data")
-async def api_data(token: str = ""):
+def api_data(token: str = ""):
     auth(token)
-    history   = load_history()
+    hc        = get_history_cached()
     positions = enrich_positions(load_positions())
-    stats     = calc_stats(history)
-
-    # 에쿼티 커브 (누적 수익률)
-    cumulative, cum = [], 0.0
-    equity_dates    = []
-    for r in history:
-        cum += float(r["pnl_pct"])
-        cumulative.append(round(cum, 2))
-        equity_dates.append(r["exit_date"][5:])  # MM-DD
-
-    # 최근 거래 이력 (역순 20건)
-    recent = []
-    for r in reversed(history[-20:]):
-        recent.append({
-            "name":       r["name"],
-            "ticker":     r["ticker"],
-            "exit_date":  r["exit_date"],
-            "exit_reason":r["exit_reason"],
-            "pnl_pct":    float(r["pnl_pct"]),
-            "entry_price":int(r.get("entry_price",0)),
-            "exit_price": int(r.get("exit_price",0)),
-        })
-
+    recent    = [{"name": r["name"], "ticker": r["ticker"],
+                  "exit_date": r["exit_date"], "exit_reason": r["exit_reason"],
+                  "pnl_pct": float(r["pnl_pct"]),
+                  "entry_price": int(r.get("entry_price", 0)),
+                  "exit_price":  int(r.get("exit_price", 0))}
+                 for r in reversed(hc["rows"][-20:])]
     return JSONResponse({
-        "now":         datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-        "auto_trade":  AUTO_TRADE,
-        "kis_mode":    "실전투자" if KIS_MODE=="real" else "모의투자",
-        "trade_amount":TRADE_AMOUNT,
-        "stats":       stats,
-        "positions":   positions,
-        "history":     recent,
-        "equity_dates":equity_dates,
-        "equity_curve":cumulative,
+        "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "auto_trade":   read_env("AUTO_TRADE", "false").lower() == "true",
+        "kis_mode":     "실전투자" if read_env("KIS_MODE","paper") == "real" else "모의투자",
+        "trade_amount": int(read_env("TRADE_AMOUNT_PER_STOCK", "200000")),
+        "stats":        hc["stats"],
+        "positions":    positions,
+        "history":      recent,
+        "equity_dates": hc["dates"],
+        "equity_curve": hc["curve"],
+        "reasons":      hc["reasons"],
     })
 
+# ③ 제어 API
+@app.post("/api/control")
+async def api_control(request: Request, token: str = ""):
+    auth(token)
+    body   = await request.json()
+    action = body.get("action", "")
+
+    if action in ("autotrade_on", "autotrade_off"):
+        value = "true" if action == "autotrade_on" else "false"
+        write_env("AUTO_TRADE", value)
+        subprocess.Popen(["systemctl", "restart", "stock-scanner"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        label = "ON" if value == "true" else "OFF"
+        send_telegram(f"🖥️ *대시보드* — 자동매매 {label} 변경\n봇 재시작 중...")
+        return JSONResponse({"ok": True, "msg": f"자동매매 {label} — 봇 재시작 중"})
+
+    if action in ("pause", "resume"):
+        cmd_map = {"pause": "🖥️ *대시보드* — 신호 발송 정지", "resume": "🖥️ *대시보드* — 신호 발송 재개"}
+        # 공유 flag 파일로 봇에 전달
+        flag = os.path.join(BASE_DIR, f"_{action}.flag")
+        open(flag, "w").close()
+        send_telegram(cmd_map[action])
+        return JSONResponse({"ok": True, "msg": f"{action} 명령 전달"})
+
+    return JSONResponse({"ok": False, "msg": "알 수 없는 액션"}, status_code=400)
+
+@app.post("/api/sell/{ticker}")
+async def api_sell(ticker: str, request: Request, token: str = ""):
+    auth(token)
+    body = await request.json()
+    qty  = int(body.get("qty", 0))
+    name = body.get("name", ticker)
+
+    result = dashboard_sell(ticker, qty, name)
+    if not result["success"]:
+        return JSONResponse({"ok": False, "msg": result["error"]}, status_code=400)
+
+    # 포지션에서 제거 + 이력 기록
+    positions = load_positions()
+    p = next((x for x in positions if x["ticker"] == ticker), None)
+    if p:
+        live  = get_price(ticker)
+        epx   = live["current"] if live else int(body.get("entry", 0))
+        entry = p.get("entry", 0)
+        pnl   = round((epx - entry)/entry*100, 2) if entry else 0
+        save_positions([x for x in positions if x["ticker"] != ticker])
+        append_history({
+            "ticker": ticker, "name": name, "sector": p.get("sector",""),
+            "entry_date": p.get("entry_date",""), "exit_date": datetime.now(KST).strftime("%Y-%m-%d"),
+            "entry_price": entry, "exit_price": epx, "quantity": p.get("quantity", qty),
+            "pnl_pct": pnl, "exit_reason": "MANUAL_SELL",
+            "signal_score": p.get("signal_score",""), "bo_lookback": p.get("bo_lookback",""),
+            "pullback_depth": p.get("pullback_depth",""), "auto_traded": p.get("auto_traded", False),
+        })
+        send_telegram(
+            f"🖥️ *대시보드 수동 청산*\n"
+            f"{name}({ticker}) {qty}주\n"
+            f"주문번호: {result['order_no']} | PnL: {pnl:+.2f}%"
+        )
+    return JSONResponse({"ok": True, "order_no": result["order_no"]})
+
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(token: str = ""):
+def dashboard(token: str = ""):
     auth(token)
     return HTMLResponse(HTML.replace("__TOKEN__", token))
 
-# ── HTML (라우터보다 먼저 정의) ──────────────────────────────────
+# ── HTML ──────────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -183,52 +349,44 @@ HTML = r"""<!DOCTYPE html>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
-  * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
-  body { background:#0d1117; color:#e6edf3; font-family:'Segoe UI',system-ui,sans-serif; overscroll-behavior:none; }
-
-  /* 카드 */
-  .card { background:#161b22; border:1px solid #21262d; border-radius:14px; }
-  .card-sm { background:#1c2128; border:1px solid #30363d; border-radius:10px; }
-
-  /* 탭 */
-  .tab-btn { flex:1; padding:14px 0 10px; font-size:11px; color:#8b949e;
-             display:flex; flex-direction:column; align-items:center; gap:3px;
-             transition:color .15s; border:none; background:none; cursor:pointer; }
-  .tab-btn.active { color:#58a6ff; }
-  .tab-btn svg { width:22px; height:22px; }
-  .tab-panel { display:none; }
-  .tab-panel.active { display:block; }
-
-  /* 펄스 */
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-  .pulse { animation:pulse 2s infinite; }
-
-  /* 뱃지 */
-  .badge-tp   { background:#0d2818; color:#3fb950; border:1px solid #196830; }
-  .badge-sl   { background:#2d0f0f; color:#f85149; border:1px solid #6e1c1c; }
-  .badge-trail{ background:#2d1f00; color:#e3b341; border:1px solid #6e4c00; }
-  .badge-exp  { background:#1c2128; color:#8b949e; border:1px solid #30363d; }
-
-  /* 진행바 트랙 */
-  .prog-track { height:6px; background:#21262d; border-radius:99px; position:relative; overflow:visible; }
-  .prog-fill  { height:100%; border-radius:99px; transition:width .4s; }
-  .prog-dot   { position:absolute; top:50%; transform:translate(-50%,-50%);
-                width:12px; height:12px; border-radius:50%; border:2px solid #0d1117; }
-
-  /* 스크롤바 */
-  ::-webkit-scrollbar { width:3px; }
-  ::-webkit-scrollbar-track { background:transparent; }
-  ::-webkit-scrollbar-thumb { background:#30363d; border-radius:99px; }
-
-  /* 새로고침 버튼 */
-  .refresh-btn { background:#21262d; border:1px solid #30363d; border-radius:8px;
-                 padding:6px 14px; font-size:12px; color:#8b949e; cursor:pointer; }
-  .refresh-btn:active { background:#30363d; }
-
-  /* KPI 숫자 */
-  .kpi-num { font-size:28px; font-weight:700; line-height:1; letter-spacing:-0.5px; }
-  .kpi-sub { font-size:11px; color:#8b949e; margin-top:3px; }
-  .green { color:#3fb950; } .red { color:#f85149; } .gray { color:#8b949e; } .blue { color:#58a6ff; }
+  *{-webkit-tap-highlight-color:transparent;box-sizing:border-box}
+  body{background:#0d1117;color:#e6edf3;font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+  .card{background:#161b22;border:1px solid #21262d;border-radius:14px}
+  .tab-btn{flex:1;padding:14px 0 10px;font-size:11px;color:#8b949e;display:flex;flex-direction:column;align-items:center;gap:3px;transition:color .15s;border:none;background:none;cursor:pointer}
+  .tab-btn.active{color:#58a6ff}
+  .tab-btn svg{width:22px;height:22px}
+  .tab-panel{display:none}
+  .tab-panel.active{display:block}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+  .pulse{animation:pulse 2s infinite}
+  .badge-tp{background:#0d2818;color:#3fb950;border:1px solid #196830}
+  .badge-sl{background:#2d0f0f;color:#f85149;border:1px solid #6e1c1c}
+  .badge-trail{background:#2d1f00;color:#e3b341;border:1px solid #6e4c00}
+  .badge-exp{background:#1c2128;color:#8b949e;border:1px solid #30363d}
+  .badge-manual{background:#1a1f35;color:#79c0ff;border:1px solid #1f4470}
+  .prog-track{height:6px;background:#21262d;border-radius:99px;position:relative;overflow:visible}
+  .prog-fill{height:100%;border-radius:99px;transition:width .4s}
+  .prog-dot{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;border:2px solid #0d1117}
+  ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#30363d;border-radius:99px}
+  .kpi-num{font-size:28px;font-weight:700;line-height:1;letter-spacing:-.5px}
+  .kpi-sub{font-size:11px;color:#8b949e;margin-top:3px}
+  .green{color:#3fb950}.red{color:#f85149}.gray{color:#8b949e}.blue{color:#58a6ff}.orange{color:#e3b341}
+  /* 토글 스위치 */
+  .toggle{position:relative;display:inline-block;width:44px;height:24px}
+  .toggle input{opacity:0;width:0;height:0}
+  .slider{position:absolute;cursor:pointer;inset:0;background:#30363d;border-radius:24px;transition:.3s}
+  .slider:before{position:absolute;content:"";width:18px;height:18px;left:3px;bottom:3px;background:#e6edf3;border-radius:50%;transition:.3s}
+  input:checked+.slider{background:#238636}
+  input:checked+.slider:before{transform:translateX(20px)}
+  /* 버튼 */
+  .btn-ctrl{font-size:12px;font-weight:500;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .15s;border:none}
+  .btn-pause{background:#21262d;color:#8b949e;border:1px solid #30363d}
+  .btn-pause:active{background:#30363d}
+  .btn-sell{background:#2d0f0f;color:#f85149;border:1px solid #6e1c1c;font-size:11px;padding:5px 10px;border-radius:7px;cursor:pointer}
+  .btn-sell:active{background:#3d1515}
+  .btn-sell:disabled{opacity:.4;cursor:not-allowed}
+  /* 토스트 */
+  #toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:10px;font-size:13px;font-weight:500;z-index:100;opacity:0;transition:opacity .3s;pointer-events:none;white-space:nowrap}
 </style>
 </head>
 <body class="pb-20">
@@ -243,22 +401,18 @@ HTML = r"""<!DOCTYPE html>
           style="background:#1c2128;color:#8b949e;border:1px solid #30363d">—</span>
   </div>
   <div class="flex items-center gap-2">
-    <span id="atBadge" class="text-xs px-2 py-0.5 rounded-full"
-          style="background:#1c2128;color:#8b949e;border:1px solid #30363d">—</span>
-    <button class="refresh-btn" onclick="loadData()">↻</button>
+    <button class="btn-ctrl btn-pause" onclick="loadData()">↻ 새로고침</button>
   </div>
 </div>
-
-<!-- 업데이트 시간 -->
 <p id="updateTime" class="text-center text-xs mt-2 mb-1" style="color:#484f58">—</p>
 
-<!-- 탭 패널 ───────────────────────────────────────── -->
+<!-- 탭 패널 -->
 <div class="px-3">
 
-  <!-- ① 개요 탭 -->
+  <!-- ① 개요 -->
   <div id="tab-overview" class="tab-panel active">
 
-    <!-- KPI 카드 4개 -->
+    <!-- KPI 4개 -->
     <div class="grid grid-cols-2 gap-2 mb-3">
       <div class="card p-4">
         <p class="kpi-sub">총 거래</p>
@@ -282,24 +436,39 @@ HTML = r"""<!DOCTYPE html>
       </div>
     </div>
 
+    <!-- 봇 제어 카드 -->
+    <div class="card p-4 mb-3">
+      <p class="text-sm font-semibold mb-3">봇 제어</p>
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <p class="text-sm text-white font-medium">자동매매</p>
+          <p id="atLabel" class="text-xs mt-0.5" style="color:#8b949e">—</p>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="atToggle" onchange="toggleAutoTrade(this.checked)">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="flex gap-2">
+        <button id="btnPause"  class="btn-ctrl btn-pause flex-1" onclick="ctrlAction('pause')">⏸ 신호 정지</button>
+        <button id="btnResume" class="btn-ctrl btn-pause flex-1" onclick="ctrlAction('resume')">▶ 신호 재개</button>
+      </div>
+    </div>
+
     <!-- 에쿼티 커브 -->
     <div class="card p-4 mb-3">
       <div class="flex items-center justify-between mb-3">
         <p class="text-sm font-semibold">에쿼티 커브</p>
         <p class="text-xs" style="color:#484f58">누적 수익률 (%)</p>
       </div>
-      <div style="height:160px">
-        <canvas id="equityChart"></canvas>
-      </div>
+      <div style="height:160px"><canvas id="equityChart"></canvas></div>
     </div>
 
-    <!-- 도넛 + 최근 거래 -->
+    <!-- 도넛 + 청산 사유 -->
     <div class="grid grid-cols-2 gap-2 mb-3">
       <div class="card p-4 flex flex-col items-center">
         <p class="text-sm font-semibold mb-2">승/패 비율</p>
-        <div style="width:100px;height:100px">
-          <canvas id="donutChart"></canvas>
-        </div>
+        <div style="width:100px;height:100px"><canvas id="donutChart"></canvas></div>
         <p id="donutLabel" class="text-xs mt-2" style="color:#8b949e">—</p>
       </div>
       <div class="card p-4">
@@ -307,49 +476,73 @@ HTML = r"""<!DOCTYPE html>
         <div id="reasonList" class="space-y-1.5 text-xs"></div>
       </div>
     </div>
-
   </div>
 
-  <!-- ② 포지션 탭 -->
+  <!-- ② 포지션 -->
   <div id="tab-positions" class="tab-panel">
     <div id="positionList" class="space-y-2 mt-1"></div>
   </div>
 
-  <!-- ③ 이력 탭 -->
+  <!-- ③ 이력 -->
   <div id="tab-history" class="tab-panel">
     <div id="historyList" class="space-y-1.5 mt-1"></div>
   </div>
 
-</div><!-- /px-3 -->
+</div>
 
-<!-- 하단 탭 네비게이션 -->
+<!-- 하단 탭 네비 -->
 <nav class="fixed bottom-0 left-0 right-0 flex z-30"
      style="background:rgba(13,17,23,.95);backdrop-filter:blur(12px);border-top:1px solid #21262d">
-  <button class="tab-btn active" onclick="switchTab('overview',this)" id="nav-overview">
+  <button class="tab-btn active" onclick="switchTab('overview',this)">
     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
       <path stroke-linecap="round" stroke-linejoin="round"
-            d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+        d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
     </svg>개요
   </button>
-  <button class="tab-btn" onclick="switchTab('positions',this)" id="nav-positions">
+  <button class="tab-btn" onclick="switchTab('positions',this)">
     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
       <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+        d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
     </svg>포지션 <span id="posBadge"></span>
   </button>
-  <button class="tab-btn" onclick="switchTab('history',this)" id="nav-history">
+  <button class="tab-btn" onclick="switchTab('history',this)">
     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
       <path stroke-linecap="round" stroke-linejoin="round"
-            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+        d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
     </svg>이력
   </button>
 </nav>
+
+<!-- 토스트 -->
+<div id="toast"></div>
 
 <script>
 const TOKEN = '__TOKEN__';
 let equityChart = null, donutChart = null;
 
-// ── 탭 전환 ───────────────────────────────────────────────────
+// ── 유틸 ──────────────────────────────────────────────────────
+const fmt  = n => Number(n).toLocaleString('ko-KR');
+const fmtP = n => (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
+const clr  = n => n > 0 ? 'green' : n < 0 ? 'red' : 'gray';
+
+function toast(msg, ok = true) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = ok ? '#0d2818' : '#2d0f0f';
+  el.style.color       = ok ? '#3fb950' : '#f85149';
+  el.style.border      = `1px solid ${ok ? '#196830' : '#6e1c1c'}`;
+  el.style.opacity = '1';
+  setTimeout(() => el.style.opacity = '0', 2800);
+}
+
+function badgeHTML(reason) {
+  const map = {TP:'badge-tp TP', SL:'badge-sl SL',
+               TRAIL_SL:'badge-trail 트레일', EXPIRE:'badge-exp 만료',
+               MANUAL_SELL:'badge-manual 수동청산'};
+  const [cls, label] = (map[reason] || 'badge-exp ?').split(' ');
+  return `<span class="text-xs px-1.5 py-0.5 rounded-full ${cls} font-medium">${label}</span>`;
+}
+
 function switchTab(name, btn) {
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -357,41 +550,86 @@ function switchTab(name, btn) {
   btn.classList.add('active');
 }
 
-// ── 포맷 헬퍼 ────────────────────────────────────────────────
-const fmt  = n => Number(n).toLocaleString('ko-KR');
-const fmtP = n => (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%';
-const clr  = n => n > 0 ? 'green' : n < 0 ? 'red' : 'gray';
+// ── 제어 API ──────────────────────────────────────────────────
+async function ctrlAction(action) {
+  try {
+    const r = await fetch(`/api/control?token=${TOKEN}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action})
+    });
+    const d = await r.json();
+    toast(d.msg, d.ok);
+  } catch(e) {
+    toast('연결 오류', false);
+  }
+}
 
-function badgeHTML(reason) {
-  const map = { TP:'badge-tp TP', SL:'badge-sl SL',
-                TRAIL_SL:'badge-trail 트레일', EXPIRE:'badge-exp 만료' };
-  const [cls, label] = (map[reason] || 'badge-exp ?').split(' ');
-  return `<span class="text-xs px-1.5 py-0.5 rounded-full ${cls} font-medium">${label}</span>`;
+async function toggleAutoTrade(on) {
+  document.getElementById('atToggle').disabled = true;
+  try {
+    const action = on ? 'autotrade_on' : 'autotrade_off';
+    const r = await fetch(`/api/control?token=${TOKEN}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action})
+    });
+    const d = await r.json();
+    toast(d.msg, d.ok);
+    document.getElementById('atLabel').textContent = on ? '활성화 — 봇 재시작 중' : '비활성화 — 봇 재시작 중';
+  } catch(e) {
+    toast('연결 오류', false);
+    document.getElementById('atToggle').checked = !on;
+  } finally {
+    setTimeout(() => document.getElementById('atToggle').disabled = false, 4000);
+  }
+}
+
+async function sellPosition(ticker, qty, name, entry) {
+  if (!confirm(`${name} (${ticker})\n${qty}주를 즉시 시장가 청산하시겠습니까?`)) return;
+  const btn = document.getElementById(`sell-${ticker}`);
+  if (btn) { btn.disabled = true; btn.textContent = '처리 중...'; }
+  try {
+    const r = await fetch(`/api/sell/${ticker}?token=${TOKEN}`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({qty, name, entry})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      toast(`${name} 청산 완료 (${d.order_no})`, true);
+      setTimeout(loadData, 1500);
+    } else {
+      toast(`청산 실패: ${d.msg}`, false);
+      if (btn) { btn.disabled = false; btn.textContent = '즉시 청산'; }
+    }
+  } catch(e) {
+    toast('연결 오류', false);
+    if (btn) { btn.disabled = false; btn.textContent = '즉시 청산'; }
+  }
 }
 
 // ── 데이터 로드 ───────────────────────────────────────────────
 async function loadData() {
   document.getElementById('updateTime').textContent = '로딩 중…';
   try {
-    const res  = await fetch(`/api/data?token=${TOKEN}`);
-    const data = await res.json();
-    render(data);
-    document.getElementById('updateTime').textContent = '업데이트: ' + data.now;
+    const d = await (await fetch(`/api/data?token=${TOKEN}`)).json();
+    render(d);
+    document.getElementById('updateTime').textContent = '업데이트: ' + d.now;
   } catch(e) {
     document.getElementById('updateTime').textContent = '연결 오류';
   }
 }
 
 function render(d) {
-  // 헤더
+  // 헤더 & 제어
   const dot = document.getElementById('statusDot');
   dot.className = 'w-2 h-2 rounded-full pulse ' + (d.auto_trade ? 'bg-green-400' : 'bg-yellow-400');
   document.getElementById('kisModeBadge').textContent = d.kis_mode;
-  const atBadge = document.getElementById('atBadge');
-  atBadge.textContent = d.auto_trade ? '🤖 자동매매 ON' : '📋 수동모드';
-  atBadge.style.cssText = d.auto_trade
-    ? 'background:#0d2818;color:#3fb950;border:1px solid #196830'
-    : 'background:#1c2128;color:#8b949e;border:1px solid #30363d';
+  const tog = document.getElementById('atToggle');
+  tog.checked = d.auto_trade;
+  document.getElementById('atLabel').textContent =
+    d.auto_trade ? '활성화 — 신호 발생 시 자동 주문' : '비활성화 — 수동 처리';
 
   // KPI
   const s = d.stats;
@@ -400,101 +638,66 @@ function render(d) {
   const wrEl = document.getElementById('kpiWR');
   wrEl.textContent = s.win_rate + '%';
   wrEl.className   = 'kpi-num mt-1 ' + (s.win_rate >= 50 ? 'green' : s.win_rate >= 40 ? 'blue' : 'red');
-  document.getElementById('kpiPF').textContent    = s.pf;
-  document.getElementById('kpiAvgW').textContent  = '+' + s.avg_win + '%';
-  document.getElementById('kpiAvgL').textContent  = s.avg_loss + '%';
+  document.getElementById('kpiPF').textContent   = s.pf;
+  document.getElementById('kpiAvgW').textContent = '+' + s.avg_win + '%';
+  document.getElementById('kpiAvgL').textContent = s.avg_loss + '%';
   const cumEl = document.getElementById('kpiCum');
   cumEl.textContent = (s.cum_pct >= 0 ? '+' : '') + s.cum_pct + '%';
   cumEl.className   = 'kpi-num mt-1 ' + clr(s.cum_pct);
   document.getElementById('kpiAmt').textContent = fmt(d.trade_amount) + '원';
 
-  // 에쿼티 커브
   renderEquity(d.equity_dates, d.equity_curve);
-
-  // 도넛
   renderDonut(s.wins, s.losses);
 
-  // 청산 사유
-  const reasons = {};
-  d.history.forEach(h => { reasons[h.exit_reason] = (reasons[h.exit_reason]||0)+1; });
-  // 전체 이력 기준으로 다시 계산 필요 - history는 최근 20건이므로 stats에서
-  const reasonEl = document.getElementById('reasonList');
-  const allReasons = {};
-  d.history.forEach(h => { allReasons[h.exit_reason] = (allReasons[h.exit_reason]||0)+1; });
-  const reasonMap = { TP:'🟢 TP', SL:'🔴 SL', TRAIL_SL:'🟠 트레일', EXPIRE:'⚫ 만료' };
-  reasonEl.innerHTML = Object.entries(allReasons)
-    .sort((a,b)=>b[1]-a[1])
-    .map(([k,v])=>`<div class="flex justify-between">
-      <span style="color:#8b949e">${reasonMap[k]||k}</span>
-      <span class="text-white font-medium">${v}건</span>
-    </div>`).join('');
+  // 청산 사유 (전체 기준)
+  const reasonMap = {TP:'🟢 TP', SL:'🔴 SL', TRAIL_SL:'🟠 트레일', EXPIRE:'⚫ 만료', MANUAL_SELL:'🔵 수동'};
+  document.getElementById('reasonList').innerHTML =
+    Object.entries(d.reasons || {}).sort((a,b)=>b[1]-a[1])
+      .map(([k,v]) => `<div class="flex justify-between">
+        <span style="color:#8b949e">${reasonMap[k]||k}</span>
+        <span class="text-white font-medium">${v}건</span>
+      </div>`).join('');
 
-  // 포지션 뱃지
-  document.getElementById('posBadge').textContent =
-    d.positions.length ? ` (${d.positions.length})` : '';
-
-  // 포지션 카드
+  document.getElementById('posBadge').textContent = d.positions.length ? ` (${d.positions.length})` : '';
   renderPositions(d.positions);
-
-  // 이력
   renderHistory(d.history);
 }
 
-// ── 에쿼티 커브 ───────────────────────────────────────────────
+// ── 에쿼티 커브 ──────────────────────────────────────────────
 function renderEquity(labels, data) {
   const ctx = document.getElementById('equityChart').getContext('2d');
-  const lastVal = data.length ? data[data.length-1] : 0;
-  const lineColor = lastVal >= 0 ? '#3fb950' : '#f85149';
-  const grad = ctx.createLinearGradient(0, 0, 0, 160);
-  grad.addColorStop(0, lastVal >= 0 ? 'rgba(63,185,80,.25)' : 'rgba(248,81,73,.25)');
+  const last = data.length ? data[data.length-1] : 0;
+  const lc   = last >= 0 ? '#3fb950' : '#f85149';
+  const grad = ctx.createLinearGradient(0,0,0,160);
+  grad.addColorStop(0, last >= 0 ? 'rgba(63,185,80,.25)' : 'rgba(248,81,73,.25)');
   grad.addColorStop(1, 'rgba(13,17,23,0)');
-
   if (equityChart) equityChart.destroy();
   equityChart = new Chart(ctx, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [{
-        data, borderColor: lineColor, backgroundColor: grad,
-        borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3,
-      }]
-    },
-    options: {
-      responsive:true, maintainAspectRatio:false,
-      plugins:{ legend:{display:false},
-        tooltip:{ callbacks:{ label: c => fmtP(c.parsed.y) } }
-      },
+    type:'line',
+    data:{ labels, datasets:[{data, borderColor:lc, backgroundColor:grad,
+            borderWidth:2, pointRadius:0, fill:true, tension:0.3}] },
+    options:{responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:c=>fmtP(c.parsed.y)}}},
       scales:{
-        x:{ ticks:{color:'#484f58',font:{size:10},maxTicksLimit:6}, grid:{display:false} },
-        y:{ ticks:{color:'#8b949e',font:{size:10}, callback:v=>v+'%'},
-            grid:{color:'rgba(33,38,45,.8)'} }
-      }
-    }
+        x:{ticks:{color:'#484f58',font:{size:10},maxTicksLimit:6},grid:{display:false}},
+        y:{ticks:{color:'#8b949e',font:{size:10},callback:v=>v+'%'},
+           grid:{color:'rgba(33,38,45,.8)'}}}}
   });
 }
 
-// ── 도넛 차트 ─────────────────────────────────────────────────
+// ── 도넛 ─────────────────────────────────────────────────────
 function renderDonut(wins, losses) {
   const ctx = document.getElementById('donutChart').getContext('2d');
   if (donutChart) donutChart.destroy();
   donutChart = new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      datasets:[{
-        data: [wins, losses],
-        backgroundColor:['#3fb950','#f85149'],
-        borderWidth:0, borderRadius:3,
-      }]
-    },
-    options:{
-      responsive:true, maintainAspectRatio:false, cutout:'72%',
-      plugins:{ legend:{display:false},
-        tooltip:{ callbacks:{ label:c => c.label+': '+c.parsed } }
-      }
-    }
+    type:'doughnut',
+    data:{datasets:[{data:[wins,losses],backgroundColor:['#3fb950','#f85149'],
+                    borderWidth:0,borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,cutout:'72%',
+      plugins:{legend:{display:false}}}
   });
-  const wr = wins+losses > 0 ? Math.round(wins/(wins+losses)*100) : 0;
-  document.getElementById('donutLabel').textContent = `${wins}W / ${losses}L`;
+  document.getElementById('donutLabel').textContent = wins+'W / '+losses+'L';
 }
 
 // ── 포지션 카드 ───────────────────────────────────────────────
@@ -508,17 +711,13 @@ function renderPositions(positions) {
     const pnl  = p.pnl_pct;
     const pclr = pnl === null ? 'gray' : clr(pnl);
     const prog = p.progress;
-    const dotColor = prog > 50 ? '#3fb950' : '#f85149';
-    const fillColor = prog > 50 ? '#3fb950' : '#f85149';
-    const trailTag = p.is_trailing
-      ? `<span class="text-xs px-1.5 py-0.5 rounded-full badge-trail ml-1">트레일</span>` : '';
-    const autoTag = p.auto_traded
-      ? `<span class="text-xs" style="color:#484f58">🤖 자동</span>`
-      : `<span class="text-xs" style="color:#484f58">✋ 수동</span>`;
-    const qtyTag = p.quantity
-      ? `<span class="text-xs" style="color:#484f58">${p.quantity}주</span>` : '';
-    const pnlText = pnl !== null ? `<span class="${pclr} font-bold text-lg">${fmtP(pnl)}</span>` : `<span class="gray text-sm">조회실패</span>`;
-    const curText = p.current ? `<span style="color:#8b949e" class="text-sm">${fmt(p.current)}원</span>` : '';
+    const dc   = prog > 50 ? '#3fb950' : '#f85149';
+    const trailTag = p.is_trailing ? `<span class="text-xs px-1.5 py-0.5 rounded-full badge-trail ml-1">트레일</span>` : '';
+    const autoTag  = p.auto_traded ? `<span class="text-xs" style="color:#484f58">🤖 자동</span>` : `<span class="text-xs" style="color:#484f58">✋ 수동</span>`;
+    const qtyTag   = p.quantity ? `<span class="text-xs" style="color:#484f58">${p.quantity}주</span>` : '';
+    const pnlText  = pnl !== null ? `<span class="${pclr} font-bold text-lg">${fmtP(pnl)}</span>` : `<span class="gray text-sm">—</span>`;
+    const curText  = p.current ? `<span style="color:#8b949e" class="text-sm">${fmt(p.current)}원</span>` : '';
+    const sellable = p.quantity > 0;
     return `
     <div class="card p-4">
       <div class="flex justify-between items-start mb-3">
@@ -526,37 +725,36 @@ function renderPositions(positions) {
           <div class="flex items-center gap-1">
             <span class="font-semibold text-white">${p.name}</span>${trailTag}
           </div>
-          <div class="flex items-center gap-2 mt-0.5">
+          <div class="flex items-center gap-1.5 mt-0.5">
             <span style="color:#484f58" class="text-xs">${p.ticker}</span>
             <span style="color:#484f58" class="text-xs">·</span>
             ${autoTag}
             ${qtyTag ? `<span style="color:#484f58" class="text-xs">·</span>${qtyTag}` : ''}
           </div>
         </div>
-        <div class="text-right">
-          ${pnlText}
-          ${curText}
-        </div>
+        <div class="text-right">${pnlText}${curText ? '<br>'+curText : ''}</div>
       </div>
-
-      <!-- TP/SL 진행바 -->
       <div class="prog-track mb-1">
-        <div class="prog-fill" style="width:${prog}%;background:${fillColor}"></div>
-        <div class="prog-dot" style="left:${prog}%;background:${dotColor}"></div>
+        <div class="prog-fill" style="width:${prog}%;background:${dc}"></div>
+        <div class="prog-dot" style="left:${prog}%;background:${dc}"></div>
       </div>
-      <div class="flex justify-between text-xs mt-1.5">
+      <div class="flex justify-between text-xs mt-1.5 mb-3">
         <span class="red">SL ${fmt(p.sl)}</span>
         <span style="color:#484f58">진입 ${fmt(p.entry)}</span>
         <span class="green">TP ${fmt(p.tp)}</span>
       </div>
-
-      <!-- 진입일 -->
-      <p class="text-xs mt-2" style="color:#484f58">${p.entry_date} 진입</p>
+      <div class="flex items-center justify-between">
+        <p class="text-xs" style="color:#484f58">${p.entry_date} 진입</p>
+        <button id="sell-${p.ticker}" class="btn-sell" ${sellable?'':'disabled'}
+          onclick="sellPosition('${p.ticker}',${p.quantity},'${p.name}',${p.entry})">
+          즉시 청산
+        </button>
+      </div>
     </div>`;
   }).join('');
 }
 
-// ── 거래 이력 ─────────────────────────────────────────────────
+// ── 이력 ──────────────────────────────────────────────────────
 function renderHistory(history) {
   const el = document.getElementById('historyList');
   if (!history.length) {
@@ -581,7 +779,6 @@ function renderHistory(history) {
   }).join('');
 }
 
-// ── 초기화 & 자동 갱신 ───────────────────────────────────────
 loadData();
 setInterval(loadData, 60000);
 </script>

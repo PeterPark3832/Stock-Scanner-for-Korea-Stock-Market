@@ -163,8 +163,11 @@ STRATEGY = {
     "rsi_min":                   45,
     "use_price_range":           True,
     "price_range_pct":           0.70,
-    # trail_pct: 5% 유지 (TP 13% 환경에서 수익 보호에 적합)
     "trail_pct":                 0.05,
+    # trail_activate_pct: 신규. 트레일링을 진입가 대비 +X% 수익 발생 이후에만 개시
+    # 기존 문제: hwm=entry 초기값으로 trail_sl=entry*0.95 즉시 활성 → 사실상 고정 5% SL
+    # 실전 분석: 트레일SL 6건 전건 손실, 평균 -4.97% → 수익 보호 아닌 손실 확대
+    "trail_activate_pct":        0.03,
     # ── 리스크 관리 ──────────────────────────────────────────────
     "max_sector_count":          2,
     # drift_winrate_threshold: 0.40→0.35  경고 임계값 현실화 (손익분기 23.5% 기준)
@@ -175,6 +178,10 @@ STRATEGY = {
     "max_positions":             5,
     # min_signal_score: 신규. 2차 검증에서 점수 미달 신호 필터링
     "min_signal_score":          40,
+    # hard_stop_pct: 신규. 진입가 대비 최대 허용 손실 한도 (갭 손실 방어)
+    # SL 위치와 무관하게 진입가 대비 -X% 초과 시 강제 청산
+    # 수산세보틱스 -9.43% 등 갭 손실 케이스 방어
+    "hard_stop_pct":             0.07,
 }
 
 
@@ -726,6 +733,7 @@ def format_weekly_report(stats: dict, week_label: str) -> str:
         "TP":       "TP 익절",
         "SL":       "SL 손절",
         "TRAIL_SL": "트레일 손절",
+        "HARD_SL":  "하드스탑",
         "EXPIRE":   "기간만료",
     }
     reason_parts = [
@@ -951,12 +959,28 @@ def job_monitor_positions() -> None:
             p["high_water_mark"] = hwm
             hwm_updated = True
 
-        trail_sl = int(hwm * (1 - STRATEGY["trail_pct"]))
-        if trail_sl > sl:
-            p["sl"] = trail_sl
-            sl = trail_sl
-
         pnl_pct = (cur - entry) / entry * 100 if entry else 0
+
+        # 트레일링 스탑: trail_activate_pct 이상 수익일 때만 개시
+        # 이전 버그: hwm=entry이므로 trail_sl=entry*0.95가 즉시 initial_sl을 초과해
+        #            진입 첫날부터 사실상 5% 고정 SL로 작동 → 트레일SL 6건 전건 손실
+        trail_activate = STRATEGY.get("trail_activate_pct", 0.0)
+        if pnl_pct >= trail_activate * 100 or p.get("trail_activated"):
+            trail_sl = int(hwm * (1 - STRATEGY["trail_pct"]))
+            if trail_sl > sl:
+                p["sl"] = trail_sl
+                sl = trail_sl
+            if not p.get("trail_activated") and pnl_pct >= trail_activate * 100:
+                p["trail_activated"] = True
+                log.info(f"  [트레일ON] {name} +{pnl_pct:.1f}% 도달 → 트레일링 스탑 개시")
+
+        # 하드스탑: 갭 손실 방어 (모니터링 주기 공백 사이 급락 시 최대 손실 한도)
+        hard_stop_pct = STRATEGY.get("hard_stop_pct", 0.0)
+        hard_stop_sl  = int(entry * (1 - hard_stop_pct)) if hard_stop_pct else 0
+        if hard_stop_sl and hard_stop_sl > sl:
+            # hard_stop이 현재 SL보다 높으면 SL을 hard_stop으로 상향
+            p["sl"] = hard_stop_sl
+            sl = hard_stop_sl
 
         if cur >= tp:
             order_result = None
@@ -973,7 +997,12 @@ def job_monitor_positions() -> None:
 
         elif cur <= sl:
             sl_init = p.get("sl_init", sl)
-            reason  = "TRAIL_SL" if sl > sl_init else "SL"
+            if hard_stop_sl and sl >= hard_stop_sl and not p.get("trail_activated"):
+                reason = "HARD_SL"   # 하드스탑 발동 (갭 손실)
+            elif sl > sl_init:
+                reason = "TRAIL_SL"
+            else:
+                reason = "SL"
             order_result = None
             if do_trade and qty > 0:
                 order_result = place_order(ticker, "sell", qty, name)
@@ -1613,7 +1642,7 @@ def send_startup_message() -> None:
         f"🔑 KIS 모드: {kis_mode_str} | {acct_str}\n"
         f"{at_str}\n"
         f"📊 시장 필터(KOSPI MA20+기울기): {mf_str}\n"
-        f"🎯 TP {int(STRATEGY['tp_pct']*100)}% | SL bo시가×{STRATEGY['sl_buffer']} | 트레일링 -{int(STRATEGY['trail_pct']*100)}%\n"
+        f"🎯 TP {int(STRATEGY['tp_pct']*100)}% | SL bo시가×{STRATEGY['sl_buffer']} | 트레일링 -{int(STRATEGY['trail_pct']*100)}%(+{int(STRATEGY.get('trail_activate_pct',0)*100)}% 활성) | 하드스탑 -{int(STRATEGY.get('hard_stop_pct',0)*100)}%\n"
         f"🔍 기준봉 {int(STRATEGY['bo_body_pct']*100)}%↑ / {STRATEGY['bo_vol_ratio']}x↑ | RSI≥{STRATEGY['rsi_min']} | 눌림볼 ≤{STRATEGY['pullback_vol']}x\n"
         f"🏆 신호점수 최소 {STRATEGY.get('min_signal_score', 0)}점 | 체결강도≥{STRATEGY['min_buy_pressure']}\n"
         f"📈 드리프트 감지: {STRATEGY['drift_weeks']}주 연속 승률 {int(STRATEGY['drift_winrate_threshold']*100)}% 미달 시 경고\n"
@@ -1901,6 +1930,8 @@ if __name__ == "__main__":
 
     schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,          "Heartbeat"))
     schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
+    # 11:30 추가: 10시~13시 갭 손실 방어 (갭하락 평균 2~3시간 내 발생)
+    schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))
     schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
     schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,       "1차 스크리닝"))
     schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))

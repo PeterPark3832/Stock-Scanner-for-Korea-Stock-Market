@@ -997,8 +997,9 @@ def job_monitor_positions() -> None:
 
         elif cur <= sl:
             sl_init = p.get("sl_init", sl)
-            if hard_stop_sl and sl >= hard_stop_sl and not p.get("trail_activated"):
-                reason = "HARD_SL"   # 하드스탑 발동 (갭 손실)
+            # HARD_SL: cur이 hard_stop 이하여야 진짜 하드스탑 (sl >= hard_stop은 항상 True라 버그)
+            if hard_stop_sl and cur <= hard_stop_sl and not p.get("trail_activated"):
+                reason = "HARD_SL"
             elif sl > sl_init:
                 reason = "TRAIL_SL"
             else:

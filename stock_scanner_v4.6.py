@@ -134,29 +134,47 @@ _TR_BAL  = "TTTC8908R" if _KIS_MODE == "real" else "VTTC8908R"
 # 전략 파라미터
 # ==========================================
 STRATEGY = {
-    "bo_body_pct":               0.07,
-    "bo_vol_ratio":              2.5,
+    # ── 기준봉 조건 (강화) ───────────────────────────────────────
+    # bo_body_pct: 7%→9% | bo_vol_ratio: 2.5x→3.0x
+    # 백테스트 분석결과 진입 신호 품질이 PF에 가장 큰 영향
+    "bo_body_pct":               0.09,
+    "bo_vol_ratio":              3.0,
     "bo_lookback":               3,
-    "pullback_vol":              1.0,
-    "pullback_shape":            0.25,
-    "tp_pct":                    0.10,
+    # ── 눌림목 조건 (강화) ───────────────────────────────────────
+    # pullback_vol: 1.0x→0.7x  거래량이 더 확실히 줄어든 눌림목만 허용
+    # pullback_shape: 0.25→0.20  더 작은 캔들(도지/십자형)만 허용
+    "pullback_vol":              0.7,
+    "pullback_shape":            0.20,
+    # ── TP/SL ──────────────────────────────────────────────────
+    # tp_pct: 10%→13%  R:R 개선 핵심. 현재 승률 28%에서도 기대수익 양수
+    # 기존: R:R=1.83:1 → 손익분기 승률 35.4%  (실제 25~35% → PF<1)
+    # 변경: R:R=3.25:1 → 손익분기 승률 23.5%  (실제 승률로 충분히 커버)
+    "tp_pct":                    0.13,
     "sl_buffer":                 0.99,
     "sl_limit":                  0.10,
     "max_hold_days":             7,
+    # ── 필터 ───────────────────────────────────────────────────
     "use_ma60_filter":           True,
     "min_marcap":                50_000_000_000,
     "use_market_filter":         True,
     "min_turnover":              1_000_000_000,
     "rsi_period":                14,
-    "rsi_min":                   30,
+    # rsi_min: 30→45  기준봉 당시 RSI<45는 반등 신호가 아닌 하락 추세 가능성
+    "rsi_min":                   45,
     "use_price_range":           True,
     "price_range_pct":           0.70,
+    # trail_pct: 5% 유지 (TP 13% 환경에서 수익 보호에 적합)
     "trail_pct":                 0.05,
+    # ── 리스크 관리 ──────────────────────────────────────────────
     "max_sector_count":          2,
-    "drift_winrate_threshold":   0.40,
+    # drift_winrate_threshold: 0.40→0.35  경고 임계값 현실화 (손익분기 23.5% 기준)
+    "drift_winrate_threshold":   0.35,
     "drift_weeks":               3,
-    "min_buy_pressure":          100,
+    # min_buy_pressure: 100→110  체결강도 기준 강화로 진입 시 매수세 확인
+    "min_buy_pressure":          110,
     "max_positions":             5,
+    # min_signal_score: 신규. 2차 검증에서 점수 미달 신호 필터링
+    "min_signal_score":          40,
 }
 
 
@@ -198,10 +216,12 @@ def calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 # ==========================================
 def calc_signal_score(stock: dict) -> int:
     score = 0.0
-    body_pct  = stock.get("bo_body_pct", 7.0)
-    score += min(max((body_pct - 7.0) / (20.0 - 7.0) * 15, 0.0), 15.0)
-    vol_ratio = stock.get("bo_vol_ratio", 2.5)
-    score += min(max((vol_ratio - 2.5) / (8.0 - 2.5) * 15, 0.0), 15.0)
+    # body_pct 기준점 9%로 상향 (STRATEGY["bo_body_pct"]=0.09 반영)
+    body_pct  = stock.get("bo_body_pct", 9.0)
+    score += min(max((body_pct - 9.0) / (20.0 - 9.0) * 15, 0.0), 15.0)
+    # vol_ratio 기준점 3.0x로 상향 (STRATEGY["bo_vol_ratio"]=3.0 반영)
+    vol_ratio = stock.get("bo_vol_ratio", 3.0)
+    score += min(max((vol_ratio - 3.0) / (8.0 - 3.0) * 15, 0.0), 15.0)
     score += {1: 15, 2: 10, 3: 5}.get(stock.get("bo_lookback", 3), 5)
     vol_dry   = stock.get("vol_dry_ratio", 1.0)
     score += min(max((1.0 - vol_dry) * 15, 0.0), 15.0)
@@ -605,13 +625,22 @@ def fdr_data_reader(ticker: str, start_date, retries: int = 3, delay: float = 1.
 def get_kospi_condition(start_date) -> tuple[bool, str]:
     try:
         kospi = fdr.DataReader("KS11", start_date)
-        if kospi.empty or len(kospi) < 20:
+        if kospi.empty or len(kospi) < 25:
             return True, "KOSPI 데이터 부족 — 필터 통과"
-        ma20  = kospi["Close"].rolling(20).mean().iloc[-1]
-        close = kospi["Close"].iloc[-1]
-        above = close >= ma20
-        status = f"KOSPI {close:,.0f} / MA20 {ma20:,.0f} ({'▲ 양호' if above else '▼ 약세'})"
-        return above, status
+        ma20_series = kospi["Close"].rolling(20).mean()
+        ma20_now    = ma20_series.iloc[-1]
+        ma20_5d_ago = ma20_series.iloc[-6]   # 5거래일 전 MA20
+        close       = kospi["Close"].iloc[-1]
+        above_ma20  = close >= ma20_now
+        # MA20 기울기 상승 여부 (5일 전 대비)
+        ma20_rising = ma20_now >= ma20_5d_ago
+        ok     = above_ma20 and ma20_rising
+        slope  = "↑상승" if ma20_rising else "↓하락"
+        status = (
+            f"KOSPI {close:,.0f} / MA20 {ma20_now:,.0f} {slope} "
+            f"({'▲ 양호' if ok else '▼ 약세'})"
+        )
+        return ok, status
     except Exception as e:
         log.warning(f"  KOSPI 조회 실패: {e} — 시장 필터 통과로 처리")
         return True, f"KOSPI 조회 실패: {e}"
@@ -1278,6 +1307,15 @@ def job_second_screen() -> None:
     log.info(f"  최종 통과: {len(verified)}개 / {len(candidates)}개")
     verified.sort(key=lambda s: s.get("signal_score", 0), reverse=True)
 
+    # 신호 품질 하한 필터 — 저품질 신호 제거
+    min_score = STRATEGY.get("min_signal_score", 0)
+    if min_score > 0:
+        before_filter = len(verified)
+        verified = [s for s in verified if s.get("signal_score", 0) >= min_score]
+        dropped = before_filter - len(verified)
+        if dropped:
+            log.info(f"  신호점수 {min_score}점 미달 제외: {dropped}개")
+
     if not verified:
         send_telegram(
             f"📉 *{datetime.now(KST).strftime('%Y-%m-%d')} 스윙 눌림목 없음*\n"
@@ -1574,8 +1612,10 @@ def send_startup_message() -> None:
         f"🕐 시작 시각: {now.strftime('%Y-%m-%d %H:%M')}\n"
         f"🔑 KIS 모드: {kis_mode_str} | {acct_str}\n"
         f"{at_str}\n"
-        f"📊 시장 필터(KOSPI MA20): {mf_str}\n"
-        f"🎯 트레일링 스탑: HWM -{int(STRATEGY['trail_pct']*100)}%\n"
+        f"📊 시장 필터(KOSPI MA20+기울기): {mf_str}\n"
+        f"🎯 TP {int(STRATEGY['tp_pct']*100)}% | SL bo시가×{STRATEGY['sl_buffer']} | 트레일링 -{int(STRATEGY['trail_pct']*100)}%\n"
+        f"🔍 기준봉 {int(STRATEGY['bo_body_pct']*100)}%↑ / {STRATEGY['bo_vol_ratio']}x↑ | RSI≥{STRATEGY['rsi_min']} | 눌림볼 ≤{STRATEGY['pullback_vol']}x\n"
+        f"🏆 신호점수 최소 {STRATEGY.get('min_signal_score', 0)}점 | 체결강도≥{STRATEGY['min_buy_pressure']}\n"
         f"📈 드리프트 감지: {STRATEGY['drift_weeks']}주 연속 승률 {int(STRATEGY['drift_winrate_threshold']*100)}% 미달 시 경고\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"⏰ 09:00 → Heartbeat + 만료 포지션 정리 (월: 주간 리포트)\n"

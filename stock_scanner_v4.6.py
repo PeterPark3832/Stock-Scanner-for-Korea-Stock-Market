@@ -152,7 +152,8 @@ STRATEGY = {
     "tp_pct":                    0.13,
     "sl_buffer":                 0.99,
     "sl_limit":                  0.10,
-    "max_hold_days":             7,
+    # max_hold_days: 7→10  TP 13%는 평균 5~10일 소요. 7일이면 도달 전 만료 가능성 높음
+    "max_hold_days":             10,
     # ── 필터 ───────────────────────────────────────────────────
     "use_ma60_filter":           True,
     "min_marcap":                50_000_000_000,

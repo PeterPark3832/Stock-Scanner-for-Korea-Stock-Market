@@ -273,6 +273,28 @@ async def api_control(request: Request, token: str = ""):
         return JSONResponse({"ok": True, "msg": f"{action} 명령 전달"})
     return JSONResponse({"ok": False, "msg": "알 수 없는 액션"}, status_code=400)
 
+@app.post("/api/set_trade_amount")
+async def api_set_trade_amount(request: Request, token: str = ""):
+    auth(token)
+    body = await request.json()
+    try:
+        amount = int(body.get("amount", 0))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "msg": "금액은 숫자여야 합니다"}, status_code=400)
+    if amount < 100_000:
+        return JSONResponse({"ok": False, "msg": "최소 100,000원 이상 입력하세요"}, status_code=400)
+    if amount > 100_000_000:
+        return JSONResponse({"ok": False, "msg": "최대 1억원까지 설정 가능합니다"}, status_code=400)
+    old = int(read_env("TRADE_AMOUNT_PER_STOCK", "1000000"))
+    write_env("TRADE_AMOUNT_PER_STOCK", str(amount))
+    subprocess.Popen(["systemctl", "restart", "stock-scanner"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    send_telegram(
+        f"🖥️ *대시보드* — 종목당 투자금액 변경\n"
+        f"{old:,}원 → {amount:,}원\n봇 재시작 중..."
+    )
+    return JSONResponse({"ok": True, "msg": f"종목당 {amount:,}원으로 변경 — 봇 재시작 중", "amount": amount})
+
 @app.post("/api/sell/{ticker}")
 async def api_sell(ticker: str, request: Request, token: str = ""):
     auth(token)
@@ -425,6 +447,11 @@ HTML = r"""<!DOCTYPE html>
   .badge-hardsl{background:#3d0a0a;color:#ff6b6b;border:1px solid #a01010}
   .badge-exp{background:#1c2128;color:#8b949e;border:1px solid #30363d}
   .badge-manual{background:#1a1f35;color:#79c0ff;border:1px solid #1f4470}
+
+  /* 투자금액 프리셋 버튼 */
+  .amt-preset{font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid #30363d;
+              background:#161b22;color:#8b949e;cursor:pointer;transition:all .15s}
+  .amt-preset:hover{border-color:#58a6ff;color:#58a6ff}
 
   /* TP/SL 진행바 */
   .prog-track{height:6px;background:#21262d;border-radius:99px;position:relative;overflow:visible}
@@ -632,6 +659,33 @@ HTML = r"""<!DOCTYPE html>
             <span class="slider"></span>
           </label>
         </div>
+
+        <!-- 종목당 투자금액 -->
+        <div class="mb-3 pt-3" style="border-top:1px solid #30363d">
+          <p class="text-sm text-white font-medium mb-1">종목당 투자금액</p>
+          <p class="text-xs mb-2" style="color:#8b949e">현재: <span id="amtCurrent">—</span> · 봇 재시작됩니다</p>
+          <div class="flex gap-2">
+            <div class="relative flex-1">
+              <input id="amtInput" type="number" min="100000" max="100000000" step="100000"
+                placeholder="예: 500000"
+                class="w-full text-sm rounded px-2 py-1.5 pr-8"
+                style="background:#0d1117;border:1px solid #30363d;color:#e6edf3"
+                onkeydown="if(event.key==='Enter') setTradeAmount()">
+              <span class="absolute right-2 top-1/2 -translate-y-1/2 text-xs" style="color:#484f58">원</span>
+            </div>
+            <button id="amtBtn" onclick="setTradeAmount()"
+              class="btn-sm px-3 whitespace-nowrap">변경</button>
+          </div>
+          <!-- 빠른 선택 버튼 -->
+          <div class="flex gap-1.5 mt-2 flex-wrap">
+            <button class="amt-preset" onclick="applyPreset(300000)">30만</button>
+            <button class="amt-preset" onclick="applyPreset(500000)">50만</button>
+            <button class="amt-preset" onclick="applyPreset(1000000)">100만</button>
+            <button class="amt-preset" onclick="applyPreset(2000000)">200만</button>
+            <button class="amt-preset" onclick="applyPreset(5000000)">500만</button>
+          </div>
+        </div>
+
         <div class="flex gap-2">
           <button class="btn-sm flex-1" onclick="ctrlAction('pause')">⏸ 신호 정지</button>
           <button class="btn-sm flex-1" onclick="ctrlAction('resume')">▶ 신호 재개</button>
@@ -828,6 +882,43 @@ async function toggleAutoTrade(on) {
   finally { setTimeout(() => document.getElementById('atToggle').disabled = false, 4500); }
 }
 
+// ── 종목당 투자금액 변경 ──────────────────────────────────────
+function applyPreset(amount) {
+  document.getElementById('amtInput').value = amount;
+  document.getElementById('amtInput').focus();
+}
+
+async function setTradeAmount() {
+  const input  = document.getElementById('amtInput');
+  const btn    = document.getElementById('amtBtn');
+  const amount = parseInt(input.value, 10);
+  if (!amount || amount < 100000) { toast('최소 100,000원 이상 입력하세요', false); return; }
+  if (amount > 100000000)         { toast('최대 1억원까지 설정 가능합니다', false); return; }
+
+  const now = new Date();
+  const kst = new Date(now.toLocaleString('en-US', {timeZone:'Asia/Seoul'}));
+  const h = kst.getHours(), m = kst.getMinutes();
+  const inMarket = (h > 9 || (h===9 && m>=0)) && (h < 15 || (h===15 && m<30));
+  if (inMarket && !confirm(
+    `⚠️ 장중 투자금액 변경\n종목당 ${amount.toLocaleString()}원으로 변경합니다.\n봇이 재시작됩니다. 계속하시겠습니까?`
+  )) return;
+
+  btn.disabled = true; btn.textContent = '변경 중…';
+  try {
+    const d = await (await fetch(`/api/set_trade_amount?token=${TOKEN}`, {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({amount})
+    })).json();
+    toast(d.msg, d.ok);
+    if (d.ok) {
+      document.getElementById('amtCurrent').textContent = amount.toLocaleString() + '원';
+      document.getElementById('kpiAmt').textContent     = amount.toLocaleString() + '원';
+      input.value = '';
+    }
+  } catch(e) { toast('연결 오류', false); }
+  finally { setTimeout(() => { btn.disabled = false; btn.textContent = '변경'; }, 4500); }
+}
+
 async function sellPosition(ticker, qty, name, entry) {
   if (!confirm(`${name} (${ticker})\n${qty}주 즉시 시장가 청산하시겠습니까?`)) return;
   const btn = document.getElementById('sell-' + ticker);
@@ -900,7 +991,8 @@ function render(d) {
   const cumEl = document.getElementById('kpiCum');
   cumEl.textContent = (s.cum_pct>=0?'+':'') + s.cum_pct + '%';
   cumEl.className   = 'kpi-num mt-1 ' + clr(s.cum_pct);
-  document.getElementById('kpiAmt').textContent = fmt(d.trade_amount) + '원';
+  document.getElementById('kpiAmt').textContent     = fmt(d.trade_amount) + '원';
+  document.getElementById('amtCurrent').textContent = d.trade_amount.toLocaleString() + '원';
 
   renderEquity(d.equity_dates, d.equity_curve);
   renderDonut(s.wins, s.losses);

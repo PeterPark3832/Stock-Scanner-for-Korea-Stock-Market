@@ -155,7 +155,11 @@ STRATEGY = {
     # 단일 TP=7%로 운영하는 것이 백테스트 최적
     "tp1_pct":                   0.00,
     "sl_buffer":                 0.99,
-    "sl_limit":                  0.10,
+    # sl_limit: 10%→4%. 진입가 대비 SL 거리 상한.
+    # 백테스트: SL -4~-5% 구간 22% 존재 → entry가 bo_open보다 높을수록 손실 확대
+    # 4% 캡으로 이 구간 차단 → avg SL -3.33% → -3.0% 개선 기대
+    # R:R: 1.83:1 → 2.03:1, 손익분기: 35.4% → 32.9%
+    "sl_limit":                  0.04,
     # max_hold_days: 10→7 복원. EXPIRE 평균 7.0일, TP avg 1.4일 — 10일은 불필요 장기 보유
     "max_hold_days":             7,
     # ── 필터 ───────────────────────────────────────────────────
@@ -183,10 +187,10 @@ STRATEGY = {
     "max_positions":             5,
     # min_signal_score: 신규. 2차 검증에서 점수 미달 신호 필터링
     "min_signal_score":          40,
-    # hard_stop_pct: 신규. 진입가 대비 최대 허용 손실 한도 (갭 손실 방어)
-    # SL 위치와 무관하게 진입가 대비 -X% 초과 시 강제 청산
-    # 수산세보틱스 -9.43% 등 갭 손실 케이스 방어
-    "hard_stop_pct":             0.07,
+    # hard_stop_pct: 7%→5%. 09:10 갭오픈 SL 체크 추가로 갭 조기 차단 가능
+    # 7%는 HARD_SL R:R=0.87:1(손익분기 53.5%) → 너무 관대
+    # 5%로 축소: R:R=1.22:1(손익분기 45.1%), 갭 방어 역할 유지하면서 손실 한도 축소
+    "hard_stop_pct":             0.05,
 }
 
 
@@ -1358,8 +1362,8 @@ def job_second_screen() -> None:
             sl_price       = int(stock["bo_open"] * STRATEGY["sl_buffer"])
             tp_price       = int(cur * (1 + STRATEGY["tp_pct"]))
             sl_pct         = (cur - sl_price) / cur
-            if sl_pct > 0.10:
-                log.info(f"  [탈락] {stock['name']} 손절폭 과대 ({sl_pct*100:.1f}%)")
+            if sl_pct > STRATEGY["sl_limit"]:
+                log.info(f"  [탈락] {stock['name']} 손절폭 과대 ({sl_pct*100:.1f}% > {STRATEGY['sl_limit']*100:.0f}%)")
                 continue
             bo_high        = stock.get("bo_high", stock["bo_open"])
             pullback_depth = round((bo_high - cur) / bo_high * 100, 1) if bo_high > 0 else 0.0

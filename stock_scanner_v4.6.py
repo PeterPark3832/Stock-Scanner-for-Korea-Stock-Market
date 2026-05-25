@@ -150,6 +150,9 @@ STRATEGY = {
     # 기존: R:R=1.83:1 → 손익분기 승률 35.4%  (실제 25~35% → PF<1)
     # 변경: R:R=3.25:1 → 손익분기 승률 23.5%  (실제 승률로 충분히 커버)
     "tp_pct":                    0.13,
+    # tp1_pct: 신규. 1차 분할 익절 목표 (+8%). tp 도달 전 절반 청산으로 기대수익 ↑
+    # TP1(+8%) → 50% 청산, TP2(+13%) → 나머지 50% 청산
+    "tp1_pct":                   0.08,
     "sl_buffer":                 0.99,
     "sl_limit":                  0.10,
     # max_hold_days: 7→10  TP 13%는 평균 5~10일 소요. 7일이면 도달 전 만료 가능성 높음
@@ -187,6 +190,7 @@ STRATEGY = {
 
 
 _first_screen_cache: list[dict] = []
+_cache_lock = threading.Lock()
 _kis_token_cache: dict = {"token": None, "expires_at": 0}
 
 _pause_signals: bool = False
@@ -732,6 +736,7 @@ def format_weekly_report(stats: dict, week_label: str) -> str:
         )
     REASON_LABELS = {
         "TP":       "TP 익절",
+        "TP1":      "TP1 절반익절",
         "SL":       "SL 손절",
         "TRAIL_SL": "트레일 손절",
         "HARD_SL":  "하드스탑",
@@ -861,11 +866,14 @@ def add_positions(stocks: list[dict]) -> None:
     for s in to_add:
         entry = s["entry"]
         sl    = s["sl"]
+        tp1_pct = STRATEGY.get("tp1_pct", 0)
         existing.append({
             "ticker":          s["ticker"],
             "name":            s["name"],
             "entry":           entry,
             "tp":              s["tp"],
+            "tp1":             int(entry * (1 + tp1_pct)) if tp1_pct else 0,
+            "tp1_taken":       False,
             "sl":              sl,
             "sl_init":         sl,
             "high_water_mark": entry,
@@ -874,8 +882,8 @@ def add_positions(stocks: list[dict]) -> None:
             "signal_score":    s.get("signal_score"),
             "bo_lookback":     s.get("bo_lookback"),
             "pullback_depth":  s.get("pullback_depth"),
-            "quantity":        s.get("quantity", 0),        # v4.6 신규
-            "auto_traded":     s.get("auto_traded", False), # v4.6 신규
+            "quantity":        s.get("quantity", 0),
+            "auto_traded":     s.get("auto_traded", False),
         })
 
     save_positions(existing)
@@ -982,6 +990,32 @@ def job_monitor_positions() -> None:
             # hard_stop이 현재 SL보다 높으면 SL을 hard_stop으로 상향
             p["sl"] = hard_stop_sl
             sl = hard_stop_sl
+
+        # TP1 분할 익절 — +8% 도달 시 보유 수량 절반 청산, 나머지는 TP2(+13%) 목표
+        tp1 = p.get("tp1", 0)
+        if tp1 and not p.get("tp1_taken") and cur >= tp1 and cur < tp:
+            half_qty = qty // 2
+            p["tp1_taken"] = True
+            if do_trade and half_qty > 0:
+                r1 = place_order(ticker, "sell", half_qty, name)
+                if (r1 or {}).get("success"):
+                    p["quantity"] = qty - half_qty
+                    qty = p["quantity"]
+                    record_trade_history({**p, "quantity": half_qty}, cur, "TP1")
+                    log.info(f"  🟡 TP1 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {half_qty}주 절반 익절")
+                    send_telegram(
+                        f"🟡 *TP1 절반 익절* — {_esc(name)} ({ticker})\n"
+                        f"  {cur:,}원 ({pnl_pct:+.1f}%)\n"
+                        f"  {half_qty}주 청산 | 잔여 {p['quantity']}주 계속 보유\n"
+                        f"  TP2 = {tp:,}원 (+{int(STRATEGY['tp_pct']*100)}%)"
+                    )
+                else:
+                    log.warning(f"  [TP1실패] {name} — 절반매도 주문 실패, 계속 추적")
+            else:
+                log.info(f"  🟡 TP1 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — 수동 절반 익절 권고")
+            remaining.append(p)
+            time.sleep(0.15)
+            continue
 
         if cur >= tp:
             order_result = None
@@ -1230,7 +1264,8 @@ def job_first_screen() -> None:
             except Exception as e:
                 log.warning(f"  [SKIP] {ticker} {name}: {e}")
 
-        _first_screen_cache = candidates
+        with _cache_lock:
+            _first_screen_cache = candidates
         log.info(f"\n[14:30] 1차 완료: {len(candidates)}개 눌림목 후보 저장")
         log.info(f"  필터 탈락 현황: {filter_counts}")
         log.info("  → 15:20 KIS 실시간 재검증 예정\n")
@@ -1268,11 +1303,11 @@ def job_second_screen() -> None:
     with _auto_trade_lock:
         do_trade = _auto_trade_enabled
 
-    if not _first_screen_cache:
-        send_telegram("⚠️ 1차 후보군 없음 (14:30 스크리닝 실행 여부 확인)")
-        return
-
-    candidates = _first_screen_cache
+    with _cache_lock:
+        if not _first_screen_cache:
+            send_telegram("⚠️ 1차 후보군 없음 (14:30 스크리닝 실행 여부 확인)")
+            return
+        candidates = list(_first_screen_cache)
     log.info(f"  대상: {len(candidates)}개 종목 | 자동매매: {'ON' if do_trade else 'OFF'}")
     verified = []
 
@@ -1354,25 +1389,32 @@ def job_second_screen() -> None:
         )
         return
 
-    # 섹터 집중도 경고
-    sector_counts: dict[str, list[str]] = {}
+    # 섹터 집중도 강제 차단 — max_sector_count 초과 시 신호점수 하위 종목 제외
+    max_sec = STRATEGY["max_sector_count"]
+    sector_buckets: dict[str, list[dict]] = {}
     for s in verified:
         sec = s.get("sector") or "미분류"
-        sector_counts.setdefault(sec, []).append(s["name"])
-    sector_warnings = {
-        sec: names for sec, names in sector_counts.items()
-        if sec != "미분류" and len(names) > STRATEGY["max_sector_count"]
-    }
-    if sector_warnings:
-        warn_lines = "\n".join(
-            f"  ▸ {sec}: {', '.join(names)} ({len(names)}개)"
-            for sec, names in sector_warnings.items()
-        )
+        sector_buckets.setdefault(sec, []).append(s)
+
+    allowed: list[dict] = []
+    blocked: list[dict] = []
+    for sec, bucket in sector_buckets.items():
+        if sec != "미분류" and len(bucket) > max_sec:
+            bucket.sort(key=lambda x: x.get("signal_score", 0), reverse=True)
+            allowed.extend(bucket[:max_sec])
+            blocked.extend(bucket[max_sec:])
+        else:
+            allowed.extend(bucket)
+
+    if blocked:
+        blocked_names = ", ".join(s["name"] for s in blocked)
         send_telegram(
-            f"⚠️ *섹터 집중 경고* — {datetime.now(KST).strftime('%m/%d')}\n"
-            f"{warn_lines}\n"
-            f"동일 섹터 {STRATEGY['max_sector_count']}개 초과 — 분산 여부 판단 필요"
+            f"⛔ *섹터 한도 초과 — 자동매수 차단* ({datetime.now(KST).strftime('%m/%d')})\n"
+            f"차단: {blocked_names}\n"
+            f"동일 섹터 {max_sec}개 초과 → 신호점수 하위 종목 제외"
         )
+        log.info(f"  섹터 강제 차단: {blocked_names}")
+        verified = allowed
 
     with _signals_lock:
         paused = _pause_signals

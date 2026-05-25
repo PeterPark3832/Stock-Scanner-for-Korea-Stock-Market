@@ -445,6 +445,7 @@ HTML = r"""<!DOCTYPE html>
   .badge-sl{background:#2d0f0f;color:#f85149;border:1px solid #6e1c1c}
   .badge-trail{background:#2d1f00;color:#e3b341;border:1px solid #6e4c00}
   .badge-hardsl{background:#3d0a0a;color:#ff6b6b;border:1px solid #a01010}
+  .badge-tp1{background:#0d1f30;color:#58a6ff;border:1px solid #1f6feb}
   .badge-exp{background:#1c2128;color:#8b949e;border:1px solid #30363d}
   .badge-manual{background:#1a1f35;color:#79c0ff;border:1px solid #1f4470}
 
@@ -837,7 +838,7 @@ function toast(msg, ok = true) {
 }
 
 function badgeHTML(reason) {
-  const m = {TP:'badge-tp TP', SL:'badge-sl SL', TRAIL_SL:'badge-trail 트레일',
+  const m = {TP:'badge-tp TP', TP1:'badge-tp1 TP1', SL:'badge-sl SL', TRAIL_SL:'badge-trail 트레일',
              HARD_SL:'badge-hardsl 하드스탑', EXPIRE:'badge-exp 만료', MANUAL_SELL:'badge-manual 수동청산'};
   const [c,l] = (m[reason] || 'badge-exp ?').split(' ');
   return `<span class="text-xs px-1.5 py-0.5 rounded-full ${c} font-medium">${l}</span>`;
@@ -998,7 +999,7 @@ function render(d) {
   renderDonut(s.wins, s.losses);
 
   // 청산 사유
-  const reasonMap = {TP:'🟢 TP',SL:'🔴 SL',TRAIL_SL:'🟠 트레일',HARD_SL:'🚨 하드스탑',EXPIRE:'⚫ 만료',MANUAL_SELL:'🔵 수동'};
+  const reasonMap = {TP:'🟢 TP',TP1:'🔵 TP1',SL:'🔴 SL',TRAIL_SL:'🟠 트레일',HARD_SL:'🚨 하드스탑',EXPIRE:'⚫ 만료',MANUAL_SELL:'🔵 수동'};
   document.getElementById('reasonList').innerHTML =
     Object.entries(d.reasons||{}).sort((a,b)=>b[1]-a[1])
       .map(([k,v])=>`<div class="flex justify-between">

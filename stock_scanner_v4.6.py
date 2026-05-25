@@ -643,14 +643,20 @@ def get_kospi_condition(start_date) -> tuple[bool, str]:
         ma20_now    = ma20_series.iloc[-1]
         ma20_5d_ago = ma20_series.iloc[-6]   # 5거래일 전 MA20
         close       = kospi["Close"].iloc[-1]
+        close_5d    = kospi["Close"].iloc[-6]
         above_ma20  = close >= ma20_now
         # MA20 기울기 상승 여부 (5일 전 대비)
         ma20_rising = ma20_now >= ma20_5d_ago
-        ok     = above_ma20 and ma20_rising
-        slope  = "↑상승" if ma20_rising else "↓하락"
+        # 주간 급락 브레이크: 5거래일 수익률 -3% 이하면 강제 차단
+        # 백테스트 연속손실 22회 중 상당 부분이 지수 급락 구간 — Dr. Alpha 요청으로 MA20 하락 병행 조건
+        weekly_ret  = (close - close_5d) / close_5d if close_5d else 0
+        weekly_ok   = weekly_ret > -0.03
+        ok          = above_ma20 and ma20_rising and weekly_ok
+        slope       = "↑상승" if ma20_rising else "↓하락"
+        weekly_tag  = f" | 주간{weekly_ret*100:+.1f}%{'⚡급락' if not weekly_ok else ''}"
         status = (
-            f"KOSPI {close:,.0f} / MA20 {ma20_now:,.0f} {slope} "
-            f"({'▲ 양호' if ok else '▼ 약세'})"
+            f"KOSPI {close:,.0f} / MA20 {ma20_now:,.0f} {slope}{weekly_tag} "
+            f"({'▲ 양호' if ok else '▼ 차단'})"
         )
         return ok, status
     except Exception as e:
@@ -884,6 +890,7 @@ def add_positions(stocks: list[dict]) -> None:
             "pullback_depth":  s.get("pullback_depth"),
             "quantity":        s.get("quantity", 0),
             "auto_traded":     s.get("auto_traded", False),
+            "sizing_factor":   s.get("sizing_factor", 1.0),
         })
 
     save_positions(existing)
@@ -1472,6 +1479,26 @@ def job_second_screen() -> None:
         add_positions(to_register)
 
 
+# ==========================================
+# 스케줄 — 14:50 : KIS 토큰 캐시 선발급
+# ==========================================
+def job_preload_kis_token() -> None:
+    """15:20 주문 직전 KIS 토큰 캐시 워밍업.
+    15:20에 토큰 만료 여부 확인 + 발급 API 호출이 겹치면 첫 주문에 1~2s 지연 발생.
+    14:50에 선발급해두면 15:20 주문 시 캐시 히트로 해당 호출 생략."""
+    if is_market_closed(datetime.now(KST)):
+        return
+    with _auto_trade_lock:
+        do_trade = _auto_trade_enabled
+    if not do_trade:
+        return
+    token = get_kis_access_token()
+    if token:
+        log.info("[14:50] KIS 토큰 선발급 완료 — 15:20 주문 지연 방지")
+    else:
+        log.warning("[14:50] KIS 토큰 선발급 실패 — 15:20 재시도 예정")
+
+
 def _execute_buy_orders(verified: list[dict]) -> None:
     """
     2차 검증 통과 종목에 대해 시장가 매수 주문 일괄 실행
@@ -1516,7 +1543,17 @@ def _execute_buy_orders(verified: list[dict]) -> None:
             continue
 
         entry = s["entry"]
-        budget = min(TRADE_AMOUNT_PER_STOCK, remaining_cash)
+        # 신호점수 비례 사이징: 40~59점 ×0.6 / 60~79점 ×1.0 / 80점↑ ×1.5
+        # 고품질 신호에 자본 집중, 미검증 팩터이므로 ±50% 범위로 제한
+        score = s.get("signal_score") or 0
+        if score >= 80:
+            sizing_factor = 1.5
+        elif score >= 60:
+            sizing_factor = 1.0
+        else:
+            sizing_factor = 0.6
+        s["sizing_factor"] = sizing_factor
+        budget = min(int(TRADE_AMOUNT_PER_STOCK * sizing_factor), remaining_cash)
         qty = _calc_order_qty(entry, budget)
 
         if qty <= 0:
@@ -1977,7 +2014,8 @@ if __name__ == "__main__":
     # 11:30 추가: 10시~13시 갭 손실 방어 (갭하락 평균 2~3시간 내 발생)
     schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))
     schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
-    schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,       "1차 스크리닝"))
+    schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,        "1차 스크리닝"))
+    schedule.every().day.at("14:50", "Asia/Seoul").do(lambda: _safe_run(job_preload_kis_token,  "KIS 토큰 선발급"))
     schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))
     schedule.every().day.at("15:25", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장마감 모니터링(15:25)"))
 

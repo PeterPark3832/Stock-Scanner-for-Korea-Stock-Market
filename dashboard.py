@@ -1092,7 +1092,7 @@ function renderPositionCards(positions) {
         <span class="green">TP ${fmt(p.tp)}</span>
       </div>
       <div class="flex items-center justify-between">
-        <p class="text-xs" style="color:#484f58">${p.entry_date}</p>
+        <p class="text-xs" style="color:#484f58">${p.entry_date}${p.sizing_factor&&p.sizing_factor!==1?` <span style="color:#8b949e">×${p.sizing_factor}배</span>`:''}</p>
         <div class="flex gap-1.5">
           <button class="btn-sm text-xs px-2 py-1"
             onclick="openEditModal('${p.ticker}','${p.name}',${p.tp},${p.sl},${p.entry})">✏️ TP/SL</button>

@@ -126,7 +126,8 @@ def save_positions(positions: list[dict]) -> None:
 def append_history(row: dict) -> None:
     fieldnames = ["ticker","name","sector","entry_date","exit_date",
                   "entry_price","exit_price","quantity","pnl_pct",
-                  "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
+                  "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded",
+                  "post_expire_pnl"]
     exists = os.path.exists(HISTORY_FILE)
     with _HISTORY_FLOCK:
         with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:

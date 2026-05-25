@@ -146,17 +146,17 @@ STRATEGY = {
     "pullback_vol":              0.7,
     "pullback_shape":            0.20,
     # ── TP/SL ──────────────────────────────────────────────────
-    # tp_pct: 10%→13%  R:R 개선 핵심. 현재 승률 28%에서도 기대수익 양수
-    # 기존: R:R=1.83:1 → 손익분기 승률 35.4%  (실제 25~35% → PF<1)
-    # 변경: R:R=3.25:1 → 손익분기 승률 23.5%  (실제 승률로 충분히 커버)
-    "tp_pct":                    0.13,
-    # tp1_pct: 신규. 1차 분할 익절 목표 (+8%). tp 도달 전 절반 청산으로 기대수익 ↑
-    # TP1(+8%) → 50% 청산, TP2(+13%) → 나머지 50% 청산
-    "tp1_pct":                   0.08,
+    # tp_pct: 백테스트 검증값 복원 (+8%)
+    # 5015건 백테스트: TP 청산 avg +6.08%, max +7.46% — 단 1건도 +8% 초과 없음
+    # 13%는 백테스트 미검증 수준 → 기존 TP달성 종목들이 EXPIRE/SL로 전환 → EV 악화
+    # 8%: 검증된 알파 포켓 상단, R:R=2.45:1, 손익분기 승률 29.0% (실전 30% 커버)
+    "tp_pct":                    0.08,
+    # tp1_pct: TP=8%로 낮추면 TP1(8%)=TP와 동일 → 분할 익절 의미 없음, 0으로 비활성
+    "tp1_pct":                   0.00,
     "sl_buffer":                 0.99,
     "sl_limit":                  0.10,
-    # max_hold_days: 7→10  TP 13%는 평균 5~10일 소요. 7일이면 도달 전 만료 가능성 높음
-    "max_hold_days":             10,
+    # max_hold_days: 10→7 복원. EXPIRE 평균 7.0일, TP avg 1.4일 — 10일은 불필요 장기 보유
+    "max_hold_days":             7,
     # ── 필터 ───────────────────────────────────────────────────
     "use_ma60_filter":           True,
     "min_marcap":                50_000_000_000,
@@ -671,20 +671,22 @@ def record_trade_history(p: dict, exit_price: int, exit_reason: str) -> None:
     entry   = p.get("entry", 0)
     pnl_pct = round((exit_price - entry) / entry * 100, 2) if entry else 0.0
     row = {
-        "ticker":        p["ticker"],
-        "name":          p["name"],
-        "sector":        p.get("sector", ""),
-        "entry_date":    p.get("entry_date", ""),
-        "exit_date":     datetime.now(KST).strftime("%Y-%m-%d"),
-        "entry_price":   entry,
-        "exit_price":    exit_price,
-        "quantity":      p.get("quantity", 0),      # v4.6 신규
-        "pnl_pct":       pnl_pct,
-        "exit_reason":   exit_reason,
-        "signal_score":   p.get("signal_score", ""),
-        "bo_lookback":    p.get("bo_lookback", ""),
-        "pullback_depth": p.get("pullback_depth", ""),
-        "auto_traded":    p.get("auto_traded", False),  # v4.6 신규
+        "ticker":           p["ticker"],
+        "name":             p["name"],
+        "sector":           p.get("sector", ""),
+        "entry_date":       p.get("entry_date", ""),
+        "exit_date":        datetime.now(KST).strftime("%Y-%m-%d"),
+        "entry_price":      entry,
+        "exit_price":       exit_price,
+        "quantity":         p.get("quantity", 0),
+        "pnl_pct":          pnl_pct,
+        "exit_reason":      exit_reason,
+        "signal_score":     p.get("signal_score", ""),
+        "bo_lookback":      p.get("bo_lookback", ""),
+        "pullback_depth":   p.get("pullback_depth", ""),
+        "auto_traded":      p.get("auto_traded", False),
+        # EXPIRE 사후 추적: 만료 5거래일 후 가격 기록 (job_heartbeat 후처리에서 채워짐)
+        "post_expire_pnl":  "",
     }
     file_exists = os.path.exists(TRADE_HISTORY_FILE)
     try:
@@ -1480,6 +1482,95 @@ def job_second_screen() -> None:
 
 
 # ==========================================
+# 스케줄 — 09:10 : 갭오픈 SL 조기 체크
+# ==========================================
+def job_morning_sl_check() -> None:
+    """
+    SL 평균 청산 0.8거래일 = 진입 익일 갭오픈에서 손실 확정이 대부분.
+    09:00 단일가 체결 직후 09:10에 실행해 갭손실 포지션을 조기 차단.
+    기존 10:00 모니터링보다 50분 먼저 잡아 갭 추가 손실 방어.
+    """
+    now = datetime.now(KST)
+    if is_market_closed(now):
+        return
+
+    positions = load_positions()
+    if not positions:
+        return
+
+    with _auto_trade_lock:
+        do_trade = _auto_trade_enabled
+
+    log.info(f"\n{'='*50}")
+    log.info(f"[09:10] 갭오픈 SL 체크 ({len(positions)}개 포지션)")
+    log.info(f"{'='*50}")
+
+    remaining = []
+    sl_hit    = []
+
+    for p in positions:
+        ticker = p["ticker"]
+        name   = p["name"]
+        entry  = p.get("entry", 0)
+        sl     = p.get("sl", 0)
+        qty    = p.get("quantity", 0)
+
+        live = get_current_price(ticker)
+        if not live:
+            remaining.append(p)
+            time.sleep(0.15)
+            continue
+
+        cur     = live["current"]
+        pnl_pct = (cur - entry) / entry * 100 if entry else 0
+
+        hard_stop_pct = STRATEGY.get("hard_stop_pct", 0.0)
+        hard_stop_sl  = int(entry * (1 - hard_stop_pct)) if hard_stop_pct else 0
+        effective_sl  = max(sl, hard_stop_sl) if hard_stop_sl else sl
+
+        if cur <= effective_sl:
+            sl_init = p.get("sl_init", sl)
+            if hard_stop_sl and cur <= hard_stop_sl and not p.get("trail_activated"):
+                reason = "HARD_SL"
+            elif sl > sl_init:
+                reason = "TRAIL_SL"
+            else:
+                reason = "SL"
+            order_result = None
+            if do_trade and qty > 0:
+                order_result = place_order(ticker, "sell", qty, name)
+            if do_trade and qty > 0 and not (order_result or {}).get("success"):
+                log.error(f"  [갭SL 매도실패] {name} — 수동 확인 필요")
+                remaining.append(p)
+            else:
+                record_trade_history(p, cur, reason)
+                sl_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "sl_reason": reason, "order": order_result})
+                log.info(f"  🔴 갭SL [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {reason}")
+        else:
+            log.info(f"  🔵 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — SL {effective_sl:,}원 유지")
+            remaining.append(p)
+
+        time.sleep(0.15)
+
+    save_positions(remaining)
+
+    if sl_hit:
+        ts  = now.strftime("%m/%d %H:%M")
+        msg = f"🌅 *갭오픈 SL 체크* ({ts})\n\n"
+        for h in sl_hit:
+            tag       = " 〔하드스탑〕" if h.get("sl_reason") == "HARD_SL" else (" 〔트레일〕" if h.get("sl_reason") == "TRAIL_SL" else "")
+            order_tag = _order_result_tag(h.get("order"), do_trade)
+            msg += (
+                f"🔴 *갭손실 조기차단{tag}* — {_esc(h['name'])}\n"
+                f"  진입 {h['entry']:,}원 → 갭오픈 *{h['cur']:,}원* ({h['pnl_pct']:+.1f}%)\n"
+                f"  {order_tag}\n\n"
+            )
+        msg += f"잔여 {len(remaining)}개 포지션 계속 추적"
+        send_telegram(msg)
+        log.info(f"  갭SL 차단: {len(sl_hit)}개")
+
+
+# ==========================================
 # 스케줄 — 14:50 : KIS 토큰 캐시 선발급
 # ==========================================
 def job_preload_kis_token() -> None:
@@ -1705,6 +1796,56 @@ def job_heartbeat() -> None:
     if now.weekday() == 0:
         log.info("  [월요일] 주간 성과 리포트 생성 중...")
         _send_weekly_report(now)
+
+    # EXPIRE 사후 추적: 5거래일 전 만료된 종목의 현재 가격을 trade_history에 업데이트
+    _update_post_expire_pnl(now)
+
+
+def _update_post_expire_pnl(now: datetime) -> None:
+    """EXPIRE 청산 후 5거래일이 경과한 행의 post_expire_pnl 컬럼을 채운다.
+    데이터가 쌓이면 '만료 후 계속 보유했다면?' 알파 검증에 사용."""
+    if not os.path.exists(TRADE_HISTORY_FILE):
+        return
+    try:
+        with _HISTORY_FLOCK:
+            with open(TRADE_HISTORY_FILE, "r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+    except Exception:
+        return
+
+    updated = 0
+    today_str = now.strftime("%Y-%m-%d")
+    for row in rows:
+        if row.get("exit_reason") != "EXPIRE":
+            continue
+        if row.get("post_expire_pnl"):
+            continue
+        exit_dt = datetime.strptime(row["exit_date"], "%Y-%m-%d")
+        # 5거래일 경과 여부 확인
+        if _count_weekdays(exit_dt, now) < 5:
+            continue
+        live = get_current_price(row["ticker"])
+        if not live:
+            continue
+        entry = float(row["entry_price"]) if row.get("entry_price") else 0
+        if not entry:
+            continue
+        post_pnl = round((live["current"] - entry) / entry * 100, 2)
+        row["post_expire_pnl"] = post_pnl
+        updated += 1
+        time.sleep(0.1)
+
+    if updated:
+        fieldnames = list(rows[0].keys()) if rows else []
+        try:
+            with _HISTORY_FLOCK:
+                with open(TRADE_HISTORY_FILE, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
+            log.info(f"  [EXPIRE 사후추적] {updated}건 post_expire_pnl 기록 완료")
+        except Exception as e:
+            log.error(f"  EXPIRE 사후추적 기록 실패: {e}")
 
 
 # ==========================================
@@ -2009,7 +2150,8 @@ if __name__ == "__main__":
             "예: KIS_ACCOUNT_NO=50071234-01"
         )
 
-    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,          "Heartbeat"))
+    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,           "Heartbeat"))
+    schedule.every().day.at("09:10", "Asia/Seoul").do(lambda: _safe_run(job_morning_sl_check,  "갭오픈 SL 체크"))
     schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
     # 11:30 추가: 10시~13시 갭 손실 방어 (갭하락 평균 2~3시간 내 발생)
     schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))

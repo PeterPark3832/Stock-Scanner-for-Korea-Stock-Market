@@ -126,7 +126,8 @@ def save_positions(positions: list[dict]) -> None:
 def append_history(row: dict) -> None:
     fieldnames = ["ticker","name","sector","entry_date","exit_date",
                   "entry_price","exit_price","quantity","pnl_pct",
-                  "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded"]
+                  "exit_reason","signal_score","bo_lookback","pullback_depth","auto_traded",
+                  "post_expire_pnl"]
     exists = os.path.exists(HISTORY_FILE)
     with _HISTORY_FLOCK:
         with open(HISTORY_FILE, "a", newline="", encoding="utf-8") as f:
@@ -445,6 +446,7 @@ HTML = r"""<!DOCTYPE html>
   .badge-sl{background:#2d0f0f;color:#f85149;border:1px solid #6e1c1c}
   .badge-trail{background:#2d1f00;color:#e3b341;border:1px solid #6e4c00}
   .badge-hardsl{background:#3d0a0a;color:#ff6b6b;border:1px solid #a01010}
+  .badge-tp1{background:#0d1f30;color:#58a6ff;border:1px solid #1f6feb}
   .badge-exp{background:#1c2128;color:#8b949e;border:1px solid #30363d}
   .badge-manual{background:#1a1f35;color:#79c0ff;border:1px solid #1f4470}
 
@@ -837,7 +839,7 @@ function toast(msg, ok = true) {
 }
 
 function badgeHTML(reason) {
-  const m = {TP:'badge-tp TP', SL:'badge-sl SL', TRAIL_SL:'badge-trail 트레일',
+  const m = {TP:'badge-tp TP', TP1:'badge-tp1 TP1', SL:'badge-sl SL', TRAIL_SL:'badge-trail 트레일',
              HARD_SL:'badge-hardsl 하드스탑', EXPIRE:'badge-exp 만료', MANUAL_SELL:'badge-manual 수동청산'};
   const [c,l] = (m[reason] || 'badge-exp ?').split(' ');
   return `<span class="text-xs px-1.5 py-0.5 rounded-full ${c} font-medium">${l}</span>`;
@@ -998,7 +1000,7 @@ function render(d) {
   renderDonut(s.wins, s.losses);
 
   // 청산 사유
-  const reasonMap = {TP:'🟢 TP',SL:'🔴 SL',TRAIL_SL:'🟠 트레일',HARD_SL:'🚨 하드스탑',EXPIRE:'⚫ 만료',MANUAL_SELL:'🔵 수동'};
+  const reasonMap = {TP:'🟢 TP',TP1:'🔵 TP1',SL:'🔴 SL',TRAIL_SL:'🟠 트레일',HARD_SL:'🚨 하드스탑',EXPIRE:'⚫ 만료',MANUAL_SELL:'🔵 수동'};
   document.getElementById('reasonList').innerHTML =
     Object.entries(d.reasons||{}).sort((a,b)=>b[1]-a[1])
       .map(([k,v])=>`<div class="flex justify-between">
@@ -1091,7 +1093,7 @@ function renderPositionCards(positions) {
         <span class="green">TP ${fmt(p.tp)}</span>
       </div>
       <div class="flex items-center justify-between">
-        <p class="text-xs" style="color:#484f58">${p.entry_date}</p>
+        <p class="text-xs" style="color:#484f58">${p.entry_date}${p.sizing_factor&&p.sizing_factor!==1?` <span style="color:#8b949e">×${p.sizing_factor}배</span>`:''}</p>
         <div class="flex gap-1.5">
           <button class="btn-sm text-xs px-2 py-1"
             onclick="openEditModal('${p.ticker}','${p.name}',${p.tp},${p.sl},${p.entry})">✏️ TP/SL</button>

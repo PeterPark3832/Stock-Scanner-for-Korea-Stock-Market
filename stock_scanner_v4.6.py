@@ -146,14 +146,17 @@ STRATEGY = {
     "pullback_vol":              0.7,
     "pullback_shape":            0.20,
     # ── TP/SL ──────────────────────────────────────────────────
-    # tp_pct: 10%→13%  R:R 개선 핵심. 현재 승률 28%에서도 기대수익 양수
-    # 기존: R:R=1.83:1 → 손익분기 승률 35.4%  (실제 25~35% → PF<1)
-    # 변경: R:R=3.25:1 → 손익분기 승률 23.5%  (실제 승률로 충분히 커버)
-    "tp_pct":                    0.13,
+    # tp_pct: 백테스트 검증값 복원 (+8%)
+    # 5015건 백테스트: TP 청산 avg +6.08%, max +7.46% — 단 1건도 +8% 초과 없음
+    # 13%는 백테스트 미검증 수준 → 기존 TP달성 종목들이 EXPIRE/SL로 전환 → EV 악화
+    # 8%: 검증된 알파 포켓 상단, R:R=2.45:1, 손익분기 승률 29.0% (실전 30% 커버)
+    "tp_pct":                    0.08,
+    # tp1_pct: TP=8%로 낮추면 TP1(8%)=TP와 동일 → 분할 익절 의미 없음, 0으로 비활성
+    "tp1_pct":                   0.00,
     "sl_buffer":                 0.99,
     "sl_limit":                  0.10,
-    # max_hold_days: 7→10  TP 13%는 평균 5~10일 소요. 7일이면 도달 전 만료 가능성 높음
-    "max_hold_days":             10,
+    # max_hold_days: 10→7 복원. EXPIRE 평균 7.0일, TP avg 1.4일 — 10일은 불필요 장기 보유
+    "max_hold_days":             7,
     # ── 필터 ───────────────────────────────────────────────────
     "use_ma60_filter":           True,
     "min_marcap":                50_000_000_000,
@@ -187,6 +190,7 @@ STRATEGY = {
 
 
 _first_screen_cache: list[dict] = []
+_cache_lock = threading.Lock()
 _kis_token_cache: dict = {"token": None, "expires_at": 0}
 
 _pause_signals: bool = False
@@ -639,14 +643,20 @@ def get_kospi_condition(start_date) -> tuple[bool, str]:
         ma20_now    = ma20_series.iloc[-1]
         ma20_5d_ago = ma20_series.iloc[-6]   # 5거래일 전 MA20
         close       = kospi["Close"].iloc[-1]
+        close_5d    = kospi["Close"].iloc[-6]
         above_ma20  = close >= ma20_now
         # MA20 기울기 상승 여부 (5일 전 대비)
         ma20_rising = ma20_now >= ma20_5d_ago
-        ok     = above_ma20 and ma20_rising
-        slope  = "↑상승" if ma20_rising else "↓하락"
+        # 주간 급락 브레이크: 5거래일 수익률 -3% 이하면 강제 차단
+        # 백테스트 연속손실 22회 중 상당 부분이 지수 급락 구간 — Dr. Alpha 요청으로 MA20 하락 병행 조건
+        weekly_ret  = (close - close_5d) / close_5d if close_5d else 0
+        weekly_ok   = weekly_ret > -0.03
+        ok          = above_ma20 and ma20_rising and weekly_ok
+        slope       = "↑상승" if ma20_rising else "↓하락"
+        weekly_tag  = f" | 주간{weekly_ret*100:+.1f}%{'⚡급락' if not weekly_ok else ''}"
         status = (
-            f"KOSPI {close:,.0f} / MA20 {ma20_now:,.0f} {slope} "
-            f"({'▲ 양호' if ok else '▼ 약세'})"
+            f"KOSPI {close:,.0f} / MA20 {ma20_now:,.0f} {slope}{weekly_tag} "
+            f"({'▲ 양호' if ok else '▼ 차단'})"
         )
         return ok, status
     except Exception as e:
@@ -661,20 +671,22 @@ def record_trade_history(p: dict, exit_price: int, exit_reason: str) -> None:
     entry   = p.get("entry", 0)
     pnl_pct = round((exit_price - entry) / entry * 100, 2) if entry else 0.0
     row = {
-        "ticker":        p["ticker"],
-        "name":          p["name"],
-        "sector":        p.get("sector", ""),
-        "entry_date":    p.get("entry_date", ""),
-        "exit_date":     datetime.now(KST).strftime("%Y-%m-%d"),
-        "entry_price":   entry,
-        "exit_price":    exit_price,
-        "quantity":      p.get("quantity", 0),      # v4.6 신규
-        "pnl_pct":       pnl_pct,
-        "exit_reason":   exit_reason,
-        "signal_score":   p.get("signal_score", ""),
-        "bo_lookback":    p.get("bo_lookback", ""),
-        "pullback_depth": p.get("pullback_depth", ""),
-        "auto_traded":    p.get("auto_traded", False),  # v4.6 신규
+        "ticker":           p["ticker"],
+        "name":             p["name"],
+        "sector":           p.get("sector", ""),
+        "entry_date":       p.get("entry_date", ""),
+        "exit_date":        datetime.now(KST).strftime("%Y-%m-%d"),
+        "entry_price":      entry,
+        "exit_price":       exit_price,
+        "quantity":         p.get("quantity", 0),
+        "pnl_pct":          pnl_pct,
+        "exit_reason":      exit_reason,
+        "signal_score":     p.get("signal_score", ""),
+        "bo_lookback":      p.get("bo_lookback", ""),
+        "pullback_depth":   p.get("pullback_depth", ""),
+        "auto_traded":      p.get("auto_traded", False),
+        # EXPIRE 사후 추적: 만료 5거래일 후 가격 기록 (job_heartbeat 후처리에서 채워짐)
+        "post_expire_pnl":  "",
     }
     file_exists = os.path.exists(TRADE_HISTORY_FILE)
     try:
@@ -732,6 +744,7 @@ def format_weekly_report(stats: dict, week_label: str) -> str:
         )
     REASON_LABELS = {
         "TP":       "TP 익절",
+        "TP1":      "TP1 절반익절",
         "SL":       "SL 손절",
         "TRAIL_SL": "트레일 손절",
         "HARD_SL":  "하드스탑",
@@ -861,11 +874,14 @@ def add_positions(stocks: list[dict]) -> None:
     for s in to_add:
         entry = s["entry"]
         sl    = s["sl"]
+        tp1_pct = STRATEGY.get("tp1_pct", 0)
         existing.append({
             "ticker":          s["ticker"],
             "name":            s["name"],
             "entry":           entry,
             "tp":              s["tp"],
+            "tp1":             int(entry * (1 + tp1_pct)) if tp1_pct else 0,
+            "tp1_taken":       False,
             "sl":              sl,
             "sl_init":         sl,
             "high_water_mark": entry,
@@ -874,8 +890,9 @@ def add_positions(stocks: list[dict]) -> None:
             "signal_score":    s.get("signal_score"),
             "bo_lookback":     s.get("bo_lookback"),
             "pullback_depth":  s.get("pullback_depth"),
-            "quantity":        s.get("quantity", 0),        # v4.6 신규
-            "auto_traded":     s.get("auto_traded", False), # v4.6 신규
+            "quantity":        s.get("quantity", 0),
+            "auto_traded":     s.get("auto_traded", False),
+            "sizing_factor":   s.get("sizing_factor", 1.0),
         })
 
     save_positions(existing)
@@ -982,6 +999,32 @@ def job_monitor_positions() -> None:
             # hard_stop이 현재 SL보다 높으면 SL을 hard_stop으로 상향
             p["sl"] = hard_stop_sl
             sl = hard_stop_sl
+
+        # TP1 분할 익절 — +8% 도달 시 보유 수량 절반 청산, 나머지는 TP2(+13%) 목표
+        tp1 = p.get("tp1", 0)
+        if tp1 and not p.get("tp1_taken") and cur >= tp1 and cur < tp:
+            half_qty = qty // 2
+            p["tp1_taken"] = True
+            if do_trade and half_qty > 0:
+                r1 = place_order(ticker, "sell", half_qty, name)
+                if (r1 or {}).get("success"):
+                    p["quantity"] = qty - half_qty
+                    qty = p["quantity"]
+                    record_trade_history({**p, "quantity": half_qty}, cur, "TP1")
+                    log.info(f"  🟡 TP1 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {half_qty}주 절반 익절")
+                    send_telegram(
+                        f"🟡 *TP1 절반 익절* — {_esc(name)} ({ticker})\n"
+                        f"  {cur:,}원 ({pnl_pct:+.1f}%)\n"
+                        f"  {half_qty}주 청산 | 잔여 {p['quantity']}주 계속 보유\n"
+                        f"  TP2 = {tp:,}원 (+{int(STRATEGY['tp_pct']*100)}%)"
+                    )
+                else:
+                    log.warning(f"  [TP1실패] {name} — 절반매도 주문 실패, 계속 추적")
+            else:
+                log.info(f"  🟡 TP1 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — 수동 절반 익절 권고")
+            remaining.append(p)
+            time.sleep(0.15)
+            continue
 
         if cur >= tp:
             order_result = None
@@ -1230,7 +1273,8 @@ def job_first_screen() -> None:
             except Exception as e:
                 log.warning(f"  [SKIP] {ticker} {name}: {e}")
 
-        _first_screen_cache = candidates
+        with _cache_lock:
+            _first_screen_cache = candidates
         log.info(f"\n[14:30] 1차 완료: {len(candidates)}개 눌림목 후보 저장")
         log.info(f"  필터 탈락 현황: {filter_counts}")
         log.info("  → 15:20 KIS 실시간 재검증 예정\n")
@@ -1268,11 +1312,11 @@ def job_second_screen() -> None:
     with _auto_trade_lock:
         do_trade = _auto_trade_enabled
 
-    if not _first_screen_cache:
-        send_telegram("⚠️ 1차 후보군 없음 (14:30 스크리닝 실행 여부 확인)")
-        return
-
-    candidates = _first_screen_cache
+    with _cache_lock:
+        if not _first_screen_cache:
+            send_telegram("⚠️ 1차 후보군 없음 (14:30 스크리닝 실행 여부 확인)")
+            return
+        candidates = list(_first_screen_cache)
     log.info(f"  대상: {len(candidates)}개 종목 | 자동매매: {'ON' if do_trade else 'OFF'}")
     verified = []
 
@@ -1354,25 +1398,32 @@ def job_second_screen() -> None:
         )
         return
 
-    # 섹터 집중도 경고
-    sector_counts: dict[str, list[str]] = {}
+    # 섹터 집중도 강제 차단 — max_sector_count 초과 시 신호점수 하위 종목 제외
+    max_sec = STRATEGY["max_sector_count"]
+    sector_buckets: dict[str, list[dict]] = {}
     for s in verified:
         sec = s.get("sector") or "미분류"
-        sector_counts.setdefault(sec, []).append(s["name"])
-    sector_warnings = {
-        sec: names for sec, names in sector_counts.items()
-        if sec != "미분류" and len(names) > STRATEGY["max_sector_count"]
-    }
-    if sector_warnings:
-        warn_lines = "\n".join(
-            f"  ▸ {sec}: {', '.join(names)} ({len(names)}개)"
-            for sec, names in sector_warnings.items()
-        )
+        sector_buckets.setdefault(sec, []).append(s)
+
+    allowed: list[dict] = []
+    blocked: list[dict] = []
+    for sec, bucket in sector_buckets.items():
+        if sec != "미분류" and len(bucket) > max_sec:
+            bucket.sort(key=lambda x: x.get("signal_score", 0), reverse=True)
+            allowed.extend(bucket[:max_sec])
+            blocked.extend(bucket[max_sec:])
+        else:
+            allowed.extend(bucket)
+
+    if blocked:
+        blocked_names = ", ".join(s["name"] for s in blocked)
         send_telegram(
-            f"⚠️ *섹터 집중 경고* — {datetime.now(KST).strftime('%m/%d')}\n"
-            f"{warn_lines}\n"
-            f"동일 섹터 {STRATEGY['max_sector_count']}개 초과 — 분산 여부 판단 필요"
+            f"⛔ *섹터 한도 초과 — 자동매수 차단* ({datetime.now(KST).strftime('%m/%d')})\n"
+            f"차단: {blocked_names}\n"
+            f"동일 섹터 {max_sec}개 초과 → 신호점수 하위 종목 제외"
         )
+        log.info(f"  섹터 강제 차단: {blocked_names}")
+        verified = allowed
 
     with _signals_lock:
         paused = _pause_signals
@@ -1430,6 +1481,115 @@ def job_second_screen() -> None:
         add_positions(to_register)
 
 
+# ==========================================
+# 스케줄 — 09:10 : 갭오픈 SL 조기 체크
+# ==========================================
+def job_morning_sl_check() -> None:
+    """
+    SL 평균 청산 0.8거래일 = 진입 익일 갭오픈에서 손실 확정이 대부분.
+    09:00 단일가 체결 직후 09:10에 실행해 갭손실 포지션을 조기 차단.
+    기존 10:00 모니터링보다 50분 먼저 잡아 갭 추가 손실 방어.
+    """
+    now = datetime.now(KST)
+    if is_market_closed(now):
+        return
+
+    positions = load_positions()
+    if not positions:
+        return
+
+    with _auto_trade_lock:
+        do_trade = _auto_trade_enabled
+
+    log.info(f"\n{'='*50}")
+    log.info(f"[09:10] 갭오픈 SL 체크 ({len(positions)}개 포지션)")
+    log.info(f"{'='*50}")
+
+    remaining = []
+    sl_hit    = []
+
+    for p in positions:
+        ticker = p["ticker"]
+        name   = p["name"]
+        entry  = p.get("entry", 0)
+        sl     = p.get("sl", 0)
+        qty    = p.get("quantity", 0)
+
+        live = get_current_price(ticker)
+        if not live:
+            remaining.append(p)
+            time.sleep(0.15)
+            continue
+
+        cur     = live["current"]
+        pnl_pct = (cur - entry) / entry * 100 if entry else 0
+
+        hard_stop_pct = STRATEGY.get("hard_stop_pct", 0.0)
+        hard_stop_sl  = int(entry * (1 - hard_stop_pct)) if hard_stop_pct else 0
+        effective_sl  = max(sl, hard_stop_sl) if hard_stop_sl else sl
+
+        if cur <= effective_sl:
+            sl_init = p.get("sl_init", sl)
+            if hard_stop_sl and cur <= hard_stop_sl and not p.get("trail_activated"):
+                reason = "HARD_SL"
+            elif sl > sl_init:
+                reason = "TRAIL_SL"
+            else:
+                reason = "SL"
+            order_result = None
+            if do_trade and qty > 0:
+                order_result = place_order(ticker, "sell", qty, name)
+            if do_trade and qty > 0 and not (order_result or {}).get("success"):
+                log.error(f"  [갭SL 매도실패] {name} — 수동 확인 필요")
+                remaining.append(p)
+            else:
+                record_trade_history(p, cur, reason)
+                sl_hit.append({**p, "cur": cur, "pnl_pct": pnl_pct, "sl_reason": reason, "order": order_result})
+                log.info(f"  🔴 갭SL [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — {reason}")
+        else:
+            log.info(f"  🔵 [{name}] {cur:,}원 ({pnl_pct:+.1f}%) — SL {effective_sl:,}원 유지")
+            remaining.append(p)
+
+        time.sleep(0.15)
+
+    save_positions(remaining)
+
+    if sl_hit:
+        ts  = now.strftime("%m/%d %H:%M")
+        msg = f"🌅 *갭오픈 SL 체크* ({ts})\n\n"
+        for h in sl_hit:
+            tag       = " 〔하드스탑〕" if h.get("sl_reason") == "HARD_SL" else (" 〔트레일〕" if h.get("sl_reason") == "TRAIL_SL" else "")
+            order_tag = _order_result_tag(h.get("order"), do_trade)
+            msg += (
+                f"🔴 *갭손실 조기차단{tag}* — {_esc(h['name'])}\n"
+                f"  진입 {h['entry']:,}원 → 갭오픈 *{h['cur']:,}원* ({h['pnl_pct']:+.1f}%)\n"
+                f"  {order_tag}\n\n"
+            )
+        msg += f"잔여 {len(remaining)}개 포지션 계속 추적"
+        send_telegram(msg)
+        log.info(f"  갭SL 차단: {len(sl_hit)}개")
+
+
+# ==========================================
+# 스케줄 — 14:50 : KIS 토큰 캐시 선발급
+# ==========================================
+def job_preload_kis_token() -> None:
+    """15:20 주문 직전 KIS 토큰 캐시 워밍업.
+    15:20에 토큰 만료 여부 확인 + 발급 API 호출이 겹치면 첫 주문에 1~2s 지연 발생.
+    14:50에 선발급해두면 15:20 주문 시 캐시 히트로 해당 호출 생략."""
+    if is_market_closed(datetime.now(KST)):
+        return
+    with _auto_trade_lock:
+        do_trade = _auto_trade_enabled
+    if not do_trade:
+        return
+    token = get_kis_access_token()
+    if token:
+        log.info("[14:50] KIS 토큰 선발급 완료 — 15:20 주문 지연 방지")
+    else:
+        log.warning("[14:50] KIS 토큰 선발급 실패 — 15:20 재시도 예정")
+
+
 def _execute_buy_orders(verified: list[dict]) -> None:
     """
     2차 검증 통과 종목에 대해 시장가 매수 주문 일괄 실행
@@ -1474,7 +1634,17 @@ def _execute_buy_orders(verified: list[dict]) -> None:
             continue
 
         entry = s["entry"]
-        budget = min(TRADE_AMOUNT_PER_STOCK, remaining_cash)
+        # 신호점수 비례 사이징: 40~59점 ×0.6 / 60~79점 ×1.0 / 80점↑ ×1.5
+        # 고품질 신호에 자본 집중, 미검증 팩터이므로 ±50% 범위로 제한
+        score = s.get("signal_score") or 0
+        if score >= 80:
+            sizing_factor = 1.5
+        elif score >= 60:
+            sizing_factor = 1.0
+        else:
+            sizing_factor = 0.6
+        s["sizing_factor"] = sizing_factor
+        budget = min(int(TRADE_AMOUNT_PER_STOCK * sizing_factor), remaining_cash)
         qty = _calc_order_qty(entry, budget)
 
         if qty <= 0:
@@ -1626,6 +1796,56 @@ def job_heartbeat() -> None:
     if now.weekday() == 0:
         log.info("  [월요일] 주간 성과 리포트 생성 중...")
         _send_weekly_report(now)
+
+    # EXPIRE 사후 추적: 5거래일 전 만료된 종목의 현재 가격을 trade_history에 업데이트
+    _update_post_expire_pnl(now)
+
+
+def _update_post_expire_pnl(now: datetime) -> None:
+    """EXPIRE 청산 후 5거래일이 경과한 행의 post_expire_pnl 컬럼을 채운다.
+    데이터가 쌓이면 '만료 후 계속 보유했다면?' 알파 검증에 사용."""
+    if not os.path.exists(TRADE_HISTORY_FILE):
+        return
+    try:
+        with _HISTORY_FLOCK:
+            with open(TRADE_HISTORY_FILE, "r", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+    except Exception:
+        return
+
+    updated = 0
+    today_str = now.strftime("%Y-%m-%d")
+    for row in rows:
+        if row.get("exit_reason") != "EXPIRE":
+            continue
+        if row.get("post_expire_pnl"):
+            continue
+        exit_dt = datetime.strptime(row["exit_date"], "%Y-%m-%d")
+        # 5거래일 경과 여부 확인
+        if _count_weekdays(exit_dt, now) < 5:
+            continue
+        live = get_current_price(row["ticker"])
+        if not live:
+            continue
+        entry = float(row["entry_price"]) if row.get("entry_price") else 0
+        if not entry:
+            continue
+        post_pnl = round((live["current"] - entry) / entry * 100, 2)
+        row["post_expire_pnl"] = post_pnl
+        updated += 1
+        time.sleep(0.1)
+
+    if updated:
+        fieldnames = list(rows[0].keys()) if rows else []
+        try:
+            with _HISTORY_FLOCK:
+                with open(TRADE_HISTORY_FILE, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(rows)
+            log.info(f"  [EXPIRE 사후추적] {updated}건 post_expire_pnl 기록 완료")
+        except Exception as e:
+            log.error(f"  EXPIRE 사후추적 기록 실패: {e}")
 
 
 # ==========================================
@@ -1930,12 +2150,14 @@ if __name__ == "__main__":
             "예: KIS_ACCOUNT_NO=50071234-01"
         )
 
-    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,          "Heartbeat"))
+    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,           "Heartbeat"))
+    schedule.every().day.at("09:10", "Asia/Seoul").do(lambda: _safe_run(job_morning_sl_check,  "갭오픈 SL 체크"))
     schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
     # 11:30 추가: 10시~13시 갭 손실 방어 (갭하락 평균 2~3시간 내 발생)
     schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))
     schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
-    schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,       "1차 스크리닝"))
+    schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,        "1차 스크리닝"))
+    schedule.every().day.at("14:50", "Asia/Seoul").do(lambda: _safe_run(job_preload_kis_token,  "KIS 토큰 선발급"))
     schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))
     schedule.every().day.at("15:25", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장마감 모니터링(15:25)"))
 

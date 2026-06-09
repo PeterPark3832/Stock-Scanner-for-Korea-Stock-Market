@@ -239,7 +239,8 @@ def api_data(token: str = ""):
                   "exit_date": r["exit_date"], "exit_reason": r["exit_reason"],
                   "pnl_pct": float(r["pnl_pct"]),
                   "entry_price": int(r.get("entry_price", 0)),
-                  "exit_price":  int(r.get("exit_price", 0))}
+                  "exit_price":  int(r.get("exit_price", 0)),
+                  "post_expire_pnl": r.get("post_expire_pnl", "")}
                  for r in reversed(hc["rows"][-20:])]
     return JSONResponse({
         "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
@@ -1167,18 +1168,22 @@ function renderHistoryCards(history) {
     el.innerHTML = `<div class="card p-6 text-center text-sm" style="color:#484f58">거래 이력 없음</div>`;
     return;
   }
-  el.innerHTML = history.map(h => `
+  el.innerHTML = history.map(h => {
+    const postTag = (h.exit_reason === 'EXPIRE' && h.post_expire_pnl)
+      ? `<span class="text-xs ml-1" style="color:#8b949e">사후 ${parseFloat(h.post_expire_pnl) >= 0 ? '+' : ''}${h.post_expire_pnl}%</span>` : '';
+    return `
   <div class="card p-3 flex items-center gap-3">
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-1.5 flex-wrap">
-        <span class="font-medium text-white text-sm">${h.name}</span>${badgeHTML(h.exit_reason)}
+        <span class="font-medium text-white text-sm">${h.name}</span>${badgeHTML(h.exit_reason)}${postTag}
       </div>
       <p class="text-xs mt-0.5" style="color:#484f58">
         ${h.exit_date} · ${fmt(h.entry_price)}→${fmt(h.exit_price)}원
       </p>
     </div>
     <span class="font-bold text-base ${clr(h.pnl_pct)} shrink-0">${fmtP(h.pnl_pct)}</span>
-  </div>`).join('');
+  </div>`;
+  }).join('');
 }
 
 function renderHistoryTableEl(history) {
@@ -1191,18 +1196,24 @@ function renderHistoryTableEl(history) {
   <div class="overflow-x-auto">
   <table class="dt">
     <thead><tr>
-      <th>종목</th><th>사유</th><th>진입가</th><th>청산가</th><th>PnL</th><th>청산일</th>
+      <th>종목</th><th>사유</th><th>진입가</th><th>청산가</th><th>PnL</th><th>사후추적</th><th>청산일</th>
     </tr></thead>
     <tbody>
-    ${history.map(h => `<tr>
+    ${history.map(h => {
+      const postCell = (h.exit_reason === 'EXPIRE' && h.post_expire_pnl)
+        ? `<span class="${clr(parseFloat(h.post_expire_pnl))}">${parseFloat(h.post_expire_pnl) >= 0 ? '+' : ''}${h.post_expire_pnl}%</span>`
+        : `<span style="color:#484f58">—</span>`;
+      return `<tr>
       <td><span class="font-medium text-white">${h.name}</span>
           <span class="text-xs ml-1" style="color:#484f58">${h.ticker}</span></td>
       <td>${badgeHTML(h.exit_reason)}</td>
       <td style="color:#8b949e">${fmt(h.entry_price)}원</td>
       <td style="color:#8b949e">${fmt(h.exit_price)}원</td>
       <td class="font-bold ${clr(h.pnl_pct)}">${fmtP(h.pnl_pct)}</td>
+      <td class="text-xs">${postCell}</td>
       <td style="color:#484f58">${h.exit_date}</td>
-    </tr>`).join('')}
+    </tr>`;
+    }).join('')}
     </tbody>
   </table>
   </div>`;

@@ -193,13 +193,23 @@ def job_first_screen() -> None:
         log.info(f"  필터 탈락 현황: {filter_counts}")
         log.info("  → 15:20 KIS 실시간 재검증 예정\n")
 
+        # 필터 탈락 상위 3개 공통 포맷
+        top_filters    = sorted(filter_counts.items(), key=lambda x: x[1], reverse=True)
+        filter_summary = " | ".join(f"{k} {v}건" for k, v in top_filters[:3] if v > 0)
+
         if candidates:
             names = ", ".join(s["name"] for s in candidates[:10])
             more  = f" 외 {len(candidates) - 10}개" if len(candidates) > 10 else ""
             send_telegram(
                 f"🔍 *1차 스윙 스크리닝 완료* ({now.strftime('%Y-%m-%d')})\n"
                 f"눌림목 후보 {len(candidates)}개: {names}{more}\n"
+                f"🔻 주요 탈락: {filter_summary}\n"
                 f"⏰ 15:20 실시간 재검증 예정"
+            )
+        else:
+            send_telegram(
+                f"📭 *1차 스윙 스크리닝 — 후보 없음* ({now.strftime('%Y-%m-%d')})\n"
+                f"🔻 주요 탈락: {filter_summary}"
             )
 
     except Exception as e:

@@ -411,7 +411,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Scanner v4.6</title>
+<title>Scanner v5.1</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
@@ -516,7 +516,7 @@ HTML = r"""<!DOCTYPE html>
   <div class="p-5" style="border-bottom:1px solid #21262d">
     <div class="flex items-center gap-2 mb-2">
       <div id="sbDot" class="w-2.5 h-2.5 rounded-full bg-gray-500 pulse"></div>
-      <span class="font-bold text-white text-sm">Scanner v4.6</span>
+      <span class="font-bold text-white text-sm">Scanner v5.1</span>
     </div>
     <div class="flex flex-wrap gap-1.5">
       <span id="sbKisMode" class="text-xs px-2 py-0.5 rounded-full"
@@ -575,7 +575,7 @@ HTML = r"""<!DOCTYPE html>
        style="background:rgba(13,17,23,.92);backdrop-filter:blur(12px);border-bottom:1px solid #21262d">
     <div class="flex items-center gap-2">
       <div id="statusDot" class="w-2 h-2 rounded-full bg-gray-500 pulse md:hidden"></div>
-      <span class="font-semibold text-sm">Scanner v4.6</span>
+      <span class="font-semibold text-sm">Scanner v5.1</span>
       <span id="kisModeBadge" class="text-xs px-2 py-0.5 rounded-full md:hidden"
             style="background:#1c2128;color:#8b949e;border:1px solid #30363d">—</span>
     </div>

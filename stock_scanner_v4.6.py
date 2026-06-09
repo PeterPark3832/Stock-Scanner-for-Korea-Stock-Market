@@ -139,12 +139,12 @@ STRATEGY = {
     # 백테스트 분석결과 진입 신호 품질이 PF에 가장 큰 영향
     "bo_body_pct":               0.09,
     "bo_vol_ratio":              3.0,
-    "bo_lookback":               3,
-    # ── 눌림목 조건 (강화) ───────────────────────────────────────
-    # pullback_vol: 1.0x→0.7x  거래량이 더 확실히 줄어든 눌림목만 허용
-    # pullback_shape: 0.25→0.20  더 작은 캔들(도지/십자형)만 허용
-    "pullback_vol":              0.7,
-    "pullback_shape":            0.20,
+    "bo_lookback":               5,     # 3→5: 기준봉 탐색 기간 확장 (신호 빈도 개선)
+    # ── 눌림목 조건 ──────────────────────────────────────────────
+    # pullback_vol: 0.7→0.8  거래량 소진 기준 완화 (신호 빈도 개선)
+    # pullback_shape: 0.20→0.30  도지 기준 완화 (20%는 전체 캔들의 10~15%만 통과)
+    "pullback_vol":              0.8,
+    "pullback_shape":            0.30,
     # ── TP/SL ──────────────────────────────────────────────────
     # tp_pct: 백테스트 검증값 7%로 확정
     # 5015건: TP avg +6.08%, max +7.46% — 8%로 올리면 TP 미발동으로 PF 0.566→0.039 붕괴
@@ -171,7 +171,7 @@ STRATEGY = {
     # rsi_min: 30→45  기준봉 당시 RSI<45는 반등 신호가 아닌 하락 추세 가능성
     "rsi_min":                   45,
     "use_price_range":           True,
-    "price_range_pct":           0.70,
+    "price_range_pct":           0.55,  # 0.70→0.55: 상위 30%→45% (가장 큰 병목 해소)
     "trail_pct":                 0.05,
     # trail_activate_pct: 신규. 트레일링을 진입가 대비 +X% 수익 발생 이후에만 개시
     # 기존 문제: hwm=entry 초기값으로 trail_sl=entry*0.95 즉시 활성 → 사실상 고정 5% SL
@@ -182,8 +182,8 @@ STRATEGY = {
     # drift_winrate_threshold: 0.40→0.35  경고 임계값 현실화 (손익분기 23.5% 기준)
     "drift_winrate_threshold":   0.35,
     "drift_weeks":               3,
-    # min_buy_pressure: 100→110  체결강도 기준 강화로 진입 시 매수세 확인
-    "min_buy_pressure":          110,
+    # min_buy_pressure: 110→100 원복  눌림목(저거래량) 구간에서 110 달성이 상충
+    "min_buy_pressure":          100,
     "max_positions":             5,
     # min_signal_score: 신규. 2차 검증에서 점수 미달 신호 필터링
     "min_signal_score":          40,
@@ -1205,7 +1205,7 @@ def job_first_screen() -> None:
                 bo_rsi       = None
                 vol20_before = None
 
-                for lookback in [1, 2, 3]:
+                for lookback in range(1, STRATEGY["bo_lookback"] + 1):
                     bo_idx = -(lookback + 1)
                     if abs(bo_idx) > len(df) or abs(bo_idx - 1) > len(df):
                         continue

@@ -114,7 +114,7 @@ def job_first_screen() -> None:
                 bo_rsi       = None
                 vol20_before = None
 
-                for lookback in [1, 2, 3]:
+                for lookback in range(1, STRATEGY["bo_lookback"] + 1):
                     bo_idx = -(lookback + 1)
                     if abs(bo_idx) > len(df) or abs(bo_idx - 1) > len(df):
                         continue

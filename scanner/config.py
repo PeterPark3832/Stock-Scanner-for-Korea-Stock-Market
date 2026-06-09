@@ -38,10 +38,10 @@ STRATEGY: dict = {
     # ── 기준봉 ────────────────────────────────────────────────────
     "bo_body_pct":               0.09,
     "bo_vol_ratio":              3.0,
-    "bo_lookback":               3,
+    "bo_lookback":               5,     # 3→5: 기준봉 탐색 기간 확장 (신호 빈도 개선)
     # ── 눌림목 ────────────────────────────────────────────────────
-    "pullback_vol":              0.7,
-    "pullback_shape":            0.20,
+    "pullback_vol":              0.8,   # 0.7→0.8: 거래량 감소 기준 완화
+    "pullback_shape":            0.30,  # 0.20→0.30: 도지 기준 완화 (캔들 10~15%만 통과 → 병목)
     # ── TP/SL ─────────────────────────────────────────────────────
     "tp_pct":                    0.07,   # 백테스트 검증값 (max TP +7.46%)
     "tp1_pct":                   0.00,   # 비활성화: TP=7% 에서 분할 익절 시 PF 하락
@@ -56,7 +56,7 @@ STRATEGY: dict = {
     "rsi_period":                14,
     "rsi_min":                   45,
     "use_price_range":           True,
-    "price_range_pct":           0.70,
+    "price_range_pct":           0.55,  # 0.70→0.55: 상위 30% → 상위 45% (가장 큰 병목 해소)
     # ── 트레일링 ──────────────────────────────────────────────────
     "trail_pct":                 0.05,
     "trail_activate_pct":        0.03,   # +3% 수익 이후 트레일링 개시
@@ -64,7 +64,7 @@ STRATEGY: dict = {
     "max_sector_count":          2,
     "drift_winrate_threshold":   0.35,
     "drift_weeks":               3,
-    "min_buy_pressure":          110,
+    "min_buy_pressure":          100,   # 110→100: 체결강도 기준 원복 (눌림목과 고강도 매수세 상충)
     "max_positions":             5,
     "min_signal_score":          40,
     "hard_stop_pct":             0.05,   # 7%→5% (09:10 갭SL 체크 병행)

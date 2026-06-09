@@ -10,6 +10,7 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # proje
 
 POSITIONS_FILE     = os.path.join(_BASE_DIR, "positions.json")
 TRADE_HISTORY_FILE = os.path.join(_BASE_DIR, "trade_history.csv")
+SCREENING_LOG_FILE = os.path.join(_BASE_DIR, "screening_log.json")
 
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 _raw_ids          = os.getenv("TELEGRAM_CHAT_IDS") or os.getenv("TELEGRAM_CHAT_ID") or ""

@@ -32,3 +32,7 @@ _shutdown_event = threading.Event()
 # 자동매매 런타임 플래그
 _auto_trade_enabled: bool = _AUTO_TRADE_INIT
 _auto_trade_lock = threading.Lock()
+
+# 최근 스크리닝 통계 캐시 (14:30 write / /stats 명령 read)
+_last_screen_stats: dict = {}
+_screen_stats_lock = threading.Lock()

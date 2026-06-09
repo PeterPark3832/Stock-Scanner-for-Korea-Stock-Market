@@ -26,7 +26,7 @@ def calc_signal_score(stock: dict) -> int:
     score += min(max((body_pct - 9.0) / (20.0 - 9.0) * 15, 0.0), 15.0)
     vol_ratio = stock.get("bo_vol_ratio", 3.0)
     score += min(max((vol_ratio - 3.0) / (8.0 - 3.0) * 15, 0.0), 15.0)
-    score += {1: 15, 2: 10, 3: 5}.get(stock.get("bo_lookback", 3), 5)
+    score += {1: 15, 2: 10, 3: 7, 4: 4, 5: 2}.get(stock.get("bo_lookback", 5), 2)
     vol_dry   = stock.get("vol_dry_ratio", 1.0)
     score += min(max((1.0 - vol_dry) * 15, 0.0), 15.0)
     shape     = stock.get("shape_ratio", 0.25)

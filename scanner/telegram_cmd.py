@@ -76,12 +76,35 @@ def _cmd_report() -> None:
     send_telegram(msg)
 
 
+def _cmd_stats() -> None:
+    with state._screen_stats_lock:
+        s = dict(state._last_screen_stats)
+    if not s:
+        send_telegram("📊 *스크리닝 통계 없음*\n14:30 스크리닝 이후 조회 가능합니다.")
+        return
+    fc = s.get("filter_counts", {})
+    top = sorted(fc.items(), key=lambda x: x[1], reverse=True)
+    lines = [f"  • {k}: {v:,}건" for k, v in top if v > 0]
+    total_filtered = sum(fc.values())
+    send_telegram(
+        f"📊 *스크리닝 통계* ({s['date']} {s['time']})\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"전체 종목: {s['total']:,}개\n"
+        f"후보 통과: {s['candidates']}개\n"
+        f"탈락 합계: {total_filtered:,}건\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"*필터별 탈락 현황*\n" + "\n".join(lines)
+    )
+
+
 def handle_command(text: str) -> None:
     parts = text.strip().lower().split()
     cmd   = parts[0]
 
     if cmd == "/positions":
         _cmd_positions()
+    elif cmd == "/stats":
+        _cmd_stats()
     elif cmd == "/report":
         _cmd_report()
     elif cmd == "/pause":
@@ -120,6 +143,7 @@ def handle_command(text: str) -> None:
         send_telegram(
             "📋 *사용 가능한 커맨드*\n\n"
             "/positions — 보유 포지션 실시간 PnL\n"
+            "/stats — 최근 스크리닝 필터 통계\n"
             "/report — 누적 성과 리포트\n"
             "/pause — 신규 신호 발송 정지\n"
             "/resume — 신호 발송 재개\n"

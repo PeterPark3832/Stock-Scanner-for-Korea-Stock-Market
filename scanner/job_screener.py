@@ -1,4 +1,6 @@
 """14:30 1차 스크리닝 + 15:20 2차 실시간 검증 + 자동매수."""
+import json
+import os
 import time
 from datetime import datetime, timedelta
 
@@ -9,7 +11,7 @@ try:
 except ImportError:
     fdr = None  # type: ignore[assignment]
 
-from scanner.config import STRATEGY, TRADE_AMOUNT_PER_STOCK
+from scanner.config import STRATEGY, TRADE_AMOUNT_PER_STOCK, SCREENING_LOG_FILE
 from scanner import state
 from scanner.notify import send_telegram, _esc
 from scanner.positions import load_positions, add_positions
@@ -189,6 +191,31 @@ def job_first_screen() -> None:
 
         with state._cache_lock:
             state._first_screen_cache = candidates
+
+        # 스크리닝 통계를 state에 저장 (/stats 명령어용)
+        screen_stats = {
+            "date":          now.strftime("%Y-%m-%d"),
+            "time":          now.strftime("%H:%M"),
+            "candidates":    len(candidates),
+            "total":         total,
+            "filter_counts": dict(filter_counts),
+        }
+        with state._screen_stats_lock:
+            state._last_screen_stats = screen_stats
+
+        # screening_log.json에 누적 저장 (최근 30일치)
+        try:
+            existing: list = []
+            if os.path.exists(SCREENING_LOG_FILE):
+                with open(SCREENING_LOG_FILE, "r", encoding="utf-8") as f:
+                    existing = json.load(f)
+            existing.append(screen_stats)
+            existing = existing[-30:]
+            with open(SCREENING_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(existing, f, ensure_ascii=False)
+        except Exception as _e:
+            log.warning(f"  [WARN] screening_log 저장 실패: {_e}")
+
         log.info(f"\n[14:30] 1차 완료: {len(candidates)}개 눌림목 후보 저장")
         log.info(f"  필터 탈락 현황: {filter_counts}")
         log.info("  → 15:20 KIS 실시간 재검증 예정\n")

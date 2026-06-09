@@ -15,8 +15,9 @@ from fastapi.responses import HTMLResponse, JSONResponse
 KST      = ZoneInfo("Asia/Seoul")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.join(BASE_DIR, ".env")
-POSITIONS_FILE = os.path.join(BASE_DIR, "positions.json")
-HISTORY_FILE   = os.path.join(BASE_DIR, "trade_history.csv")
+POSITIONS_FILE    = os.path.join(BASE_DIR, "positions.json")
+HISTORY_FILE      = os.path.join(BASE_DIR, "trade_history.csv")
+SCREENING_LOG_FILE = os.path.join(BASE_DIR, "screening_log.json")
 
 def read_env(key: str, default: str = "") -> str:
     try:
@@ -378,6 +379,18 @@ def api_logs(token: str = "", lines: int = 100):
         return JSONResponse({"lines": [], "error": str(e)})
 
 
+@app.get("/api/screening-log")
+def api_screening_log(token: str = ""):
+    auth(token)
+    if not os.path.exists(SCREENING_LOG_FILE):
+        return JSONResponse([])
+    try:
+        with open(SCREENING_LOG_FILE, "r", encoding="utf-8") as f:
+            return JSONResponse(json.load(f))
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 @app.post("/api/position/{ticker}/update")
 async def api_position_update(ticker: str, request: Request, token: str = ""):
     auth(token)
@@ -694,6 +707,18 @@ HTML = r"""<!DOCTYPE html>
           <button class="btn-sm flex-1" onclick="ctrlAction('resume')">▶ 신호 재개</button>
         </div>
       </div>
+
+      <!-- 신호 빈도 패널 -->
+      <div class="card p-4 mt-3">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-semibold">필터 탈락 현황 (최근 스크리닝)</p>
+          <p id="screeningMeta" class="text-xs" style="color:#484f58">—</p>
+        </div>
+        <div id="filterNoData" class="text-xs text-center py-4" style="color:#484f58;display:none">
+          14:30 스크리닝 후 데이터가 표시됩니다
+        </div>
+        <div class="h-48 md:h-40"><canvas id="filterChart"></canvas></div>
+      </div>
     </div>
 
     <!-- ② 포지션 ─────────────────────────────────────────── -->
@@ -823,7 +848,7 @@ HTML = r"""<!DOCTYPE html>
 
 <script>
 const TOKEN = '__TOKEN__';
-let equityChart = null, donutChart = null, btChart = null, btLoaded = false;
+let equityChart = null, donutChart = null, btChart = null, filterChart = null, btLoaded = false;
 
 // ── 유틸 ───────────────────────────────────────────────────
 const fmt  = n => Number(n).toLocaleString('ko-KR');
@@ -1371,8 +1396,60 @@ async function loadLogs(lines) {
   } catch(e) { el.innerHTML = '<p class="log-line log-err">로그 로드 실패</p>'; }
 }
 
+async function loadScreeningLog() {
+  try {
+    const rows = await (await fetch(`/api/screening-log?token=${TOKEN}`)).json();
+    if (!Array.isArray(rows) || rows.length === 0) {
+      document.getElementById('filterNoData').style.display = 'block';
+      const canvas = document.getElementById('filterChart');
+      if (canvas) canvas.style.display = 'none';
+      return;
+    }
+    const last = rows[rows.length - 1];
+    document.getElementById('screeningMeta').textContent =
+      `${last.date} ${last.time} | 후보 ${last.candidates}개 / 전체 ${last.total.toLocaleString()}개`;
+    document.getElementById('filterNoData').style.display = 'none';
+    const canvas = document.getElementById('filterChart');
+    if (canvas) canvas.style.display = 'block';
+    const fc = last.filter_counts || {};
+    const labels = Object.keys(fc).filter(k => fc[k] > 0);
+    const values = labels.map(k => fc[k]);
+    const ctx = canvas.getContext('2d');
+    if (filterChart) filterChart.destroy();
+    filterChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: 'rgba(88,166,255,0.55)',
+          borderColor:     'rgba(88,166,255,0.9)',
+          borderWidth: 1,
+          borderRadius: 3,
+        }]
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: {
+          callbacks: { label: ctx => ` ${ctx.raw.toLocaleString()}건` }
+        }},
+        scales: {
+          x: { grid: { color:'#21262d' }, ticks: { color:'#8b949e', font:{size:10} } },
+          y: { grid: { display: false }, ticks: { color:'#e6edf3', font:{size:11} } },
+        }
+      }
+    });
+  } catch(e) {
+    document.getElementById('filterNoData').style.display = 'block';
+  }
+}
+
 loadData();
+loadScreeningLog();
 setInterval(loadData, 60000);
+setInterval(loadScreeningLog, 300000);
 </script>
 </body>
 </html>"""

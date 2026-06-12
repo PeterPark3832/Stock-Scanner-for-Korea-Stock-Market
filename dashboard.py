@@ -426,76 +426,91 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Scanner v5.1</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --c-primary:#2ECC88;--c-primary-dk:#25b374;
-  --c-bg:#F2F6FB;--c-surface:#fff;
-  --c-text:#1A1D23;--c-text2:#6B7280;
-  --c-border:#E5E9F0;
+  --c-primary:#10B981;--c-primary-dk:#059669;
+  --c-bg:#F1F5F9;--c-surface:#fff;--c-surface2:#F8FAFC;
+  --c-text:#0F172A;--c-text2:#64748B;
+  --c-border:#E2E8F0;
   --c-danger:#EF4444;--c-warn:#F59E0B;--c-info:#3B82F6;
   --sidebar-w:220px;
+  /* dark sidebar tokens */
+  --sb-bg:#0F172A;--sb-border:rgba(255,255,255,.08);
+  --sb-text:#94A3B8;--sb-text-hover:#E2E8F0;
+  --sb-active-bg:rgba(255,255,255,.09);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-body{background:var(--c-bg);color:var(--c-text);font-family:'Segoe UI',system-ui,sans-serif;overscroll-behavior:none}
+html{overflow-x:hidden}
+body{background:var(--c-bg);color:var(--c-text);font-family:'Inter','Segoe UI',system-ui,sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased;overflow-x:hidden;max-width:100vw}
 
 /* Layout */
 .layout{display:flex;min-height:100vh}
-.sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--c-surface);border-right:1px solid var(--c-border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;overflow-y:auto}
-.main{margin-left:var(--sidebar-w);flex:1;padding:24px;max-width:1400px}
+.sidebar{width:var(--sidebar-w);flex-shrink:0;background:var(--sb-bg);border-right:1px solid var(--sb-border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100;overflow-y:auto}
+.main{margin-left:var(--sidebar-w);flex:1;padding:28px 28px 28px;max-width:1400px}
 
 /* Sidebar */
-.sb-logo{padding:20px 16px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--c-border)}
-.sb-logo-icon{width:36px;height:36px;background:var(--c-primary);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
-.sb-logo-icon svg{width:20px;height:20px;fill:#fff}
-.sb-logo-text{font-size:15px;font-weight:700;letter-spacing:-.3px}
-.sb-logo-sub{font-size:11px;color:var(--c-text2)}
-.sb-section{padding:16px 14px 6px;font-size:11px;font-weight:600;color:var(--c-text2);text-transform:uppercase;letter-spacing:.6px}
+.sb-logo{padding:20px 16px 16px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--sb-border)}
+.sb-logo-icon{width:34px;height:34px;background:var(--c-primary);border-radius:9px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.sb-logo-icon svg{width:18px;height:18px;fill:#fff}
+.sb-logo-text{font-size:14px;font-weight:700;letter-spacing:-.2px;color:#F1F5F9}
+.sb-logo-sub{font-size:11px;color:var(--sb-text)}
+.sb-section{padding:20px 14px 6px;font-size:10px;font-weight:600;color:rgba(255,255,255,.28);text-transform:uppercase;letter-spacing:.8px}
 .sb-nav{list-style:none;padding:0 8px}
-.sb-nav li a{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border-radius:8px;font-size:13.5px;color:var(--c-text2);text-decoration:none;background:none;border:none;cursor:pointer;transition:all .15s}
-.sb-nav li a:hover{background:var(--c-bg);color:var(--c-text)}
-.sb-nav li a.active{background:#E8F9F2;color:var(--c-primary);font-weight:600}
-.sb-nav li a svg{width:17px;height:17px;flex-shrink:0}
-.sb-bottom{margin-top:auto;padding:12px 8px;border-top:1px solid var(--c-border)}
-.sb-status{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:8px;background:var(--c-bg);font-size:12px}
-.sb-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.sb-dot.green{background:#22c55e;box-shadow:0 0 0 3px #dcfce7}
-.sb-dot.red{background:#ef4444;box-shadow:0 0 0 3px #fee2e2}
+.sb-nav li a{display:flex;align-items:center;gap:10px;width:100%;padding:9px 10px;border-radius:8px;font-size:13px;color:var(--sb-text);text-decoration:none;background:none;border:none;cursor:pointer;transition:all .15s}
+.sb-nav li a:hover{background:rgba(255,255,255,.07);color:var(--sb-text-hover)}
+.sb-nav li a.active{background:var(--sb-active-bg);color:#fff;font-weight:600}
+.sb-nav li a.active svg{color:var(--c-primary)}
+.sb-nav li a svg{width:16px;height:16px;flex-shrink:0;transition:color .15s}
+.sb-bottom{margin-top:auto;padding:12px 8px;border-top:1px solid var(--sb-border)}
+.sb-status{display:flex;align-items:center;gap:8px;padding:9px 10px;border-radius:8px;background:rgba(255,255,255,.05);font-size:12px}
+.sb-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.sb-dot.green{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2)}
+.sb-dot.red{background:#ef4444;box-shadow:0 0 0 3px rgba(239,68,68,.2)}
+.sb-status span{color:var(--sb-text)}
 
 /* Card */
-.card{background:var(--c-surface);border-radius:14px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.card-title{font-size:13px;font-weight:600;color:var(--c-text2);margin-bottom:14px;display:flex;align-items:center;justify-content:space-between}
+.card{background:var(--c-surface);border-radius:14px;padding:22px;box-shadow:0 1px 2px rgba(0,0,0,.04);border:1px solid var(--c-border)}
+.card-title{font-size:11px;font-weight:700;color:var(--c-text2);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;text-transform:uppercase;letter-spacing:.5px}
 
 /* KPI strip */
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
-.kpi-card{background:var(--c-surface);border-radius:14px;padding:18px 20px;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.kpi-label{font-size:12px;color:var(--c-text2);margin-bottom:6px;font-weight:500}
-.kpi-value{font-size:28px;font-weight:700;letter-spacing:-.5px;line-height:1}
-.kpi-sub{font-size:11.5px;color:var(--c-text2);margin-top:5px}
-.kpi-value.green{color:#16a34a}
-.kpi-value.red{color:#dc2626}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.kpi-card{background:#fff;border-radius:14px;padding:24px 22px 20px;box-shadow:0 0 0 1px rgba(15,23,42,.06),0 4px 20px rgba(15,23,42,.07);transition:box-shadow .2s,transform .2s;will-change:transform}
+.kpi-card:hover{box-shadow:0 0 0 1px rgba(15,23,42,.09),0 8px 32px rgba(15,23,42,.11);transform:translateY(-2px)}
+.kpi-label{font-size:10.5px;color:var(--c-text2);font-weight:600;letter-spacing:.7px;margin-bottom:10px;text-transform:uppercase}
+.kpi-value{font-size:32px;font-weight:700;letter-spacing:-.8px;line-height:1;font-variant-numeric:tabular-nums}
+.kpi-sub{font-size:12px;color:var(--c-text2);margin-top:8px;min-width:0}
+.kpi-value.green{color:#059669}
+.kpi-value.red{color:#DC2626}
 .kpi-value.neutral{color:var(--c-text)}
 
 /* Bot card */
-.grid-bot{display:grid;grid-template-columns:300px 1fr;gap:16px;margin-bottom:20px}
-.bot-card{border-left:4px solid var(--c-primary)}
-.bot-avatar{width:48px;height:48px;border-radius:12px;background:linear-gradient(135deg,var(--c-primary),#1a9e66);display:flex;align-items:center;justify-content:center;margin-bottom:12px}
-.bot-avatar svg{width:26px;height:26px;fill:#fff}
-.bot-name{font-size:16px;font-weight:700;margin-bottom:2px}
-.bot-role{font-size:12px;color:var(--c-text2)}
-.bot-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:14px}
-.bot-stat{background:var(--c-bg);border-radius:8px;padding:10px 12px}
+.grid-bot{display:grid;grid-template-columns:280px 1fr;gap:16px;margin-bottom:20px}
+.bot-card{border-left:3px solid var(--c-primary)}
+.bot-header{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.bot-avatar{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--c-primary),#1a9e66);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.bot-avatar svg{width:22px;height:22px;fill:#fff}
+.bot-name{font-size:15px;font-weight:700;margin-bottom:2px}
+.bot-role{font-size:11.5px;color:var(--c-text2)}
+.bot-stats{display:flex;flex-wrap:wrap;gap:6px}
+.bot-stat{background:var(--c-bg);border-radius:8px;padding:7px 12px;display:flex;align-items:center;gap:7px;border:1px solid var(--c-border)}
 .bot-stat-label{font-size:11px;color:var(--c-text2)}
-.bot-stat-value{font-size:14px;font-weight:600;margin-top:2px}
+.bot-stat-value{font-size:13px;font-weight:600}
 
-/* Ring charts */
-.ring-row{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:20px}
-.ring-card{background:var(--c-surface);border-radius:12px;padding:14px 8px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.06)}
-.ring-label{font-size:11px;color:var(--c-text2);margin-bottom:8px;font-weight:500}
-.ring-canvas-wrap{position:relative;width:72px;height:72px;margin:0 auto}
-.ring-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
-.ring-pct{font-size:15px;font-weight:700;line-height:1}
-.ring-count{font-size:10px;color:var(--c-text2);margin-top:1px}
+/* Reason bar chart */
+.reason-bar-list{display:flex;flex-direction:column;gap:8px}
+.reason-bar-row{display:grid;grid-template-columns:88px 1fr 64px;align-items:center;gap:10px}
+.reason-bar-label{font-size:12px;color:var(--c-text2);font-weight:500;white-space:nowrap;text-align:right}
+.reason-bar-track{background:var(--c-border);border-radius:4px;height:8px;overflow:hidden}
+.reason-bar-fill{height:100%;border-radius:4px;transition:width .4s ease}
+.reason-bar-meta{font-size:11.5px;color:var(--c-text2);white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
+.reason-bar-pct{font-weight:700;color:var(--c-text)}
+@media(max-width:640px){
+  .reason-bar-row{grid-template-columns:72px 1fr 56px}
+  .reason-bar-label{font-size:11px}
+}
 
 /* Mini calendar */
 .cal-month{font-size:14px;font-weight:700;text-align:center;margin-bottom:10px}
@@ -516,11 +531,14 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Segoe UI',system-ui
 /* Tables */
 .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:13px}
-thead th{background:var(--c-bg);color:var(--c-text2);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;padding:10px 14px;text-align:left;border-bottom:1px solid var(--c-border);white-space:nowrap}
+thead th{background:var(--c-bg);color:var(--c-text2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;text-align:left;border-bottom:2px solid var(--c-border);white-space:nowrap}
 tbody tr{border-bottom:1px solid var(--c-border);transition:background .12s}
-tbody tr:hover{background:#f8fafb}
+tbody tr:nth-child(even){background:var(--c-surface2)}
+tbody tr:hover{background:rgba(16,185,129,.04)}
 tbody tr:last-child{border-bottom:none}
 td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
+.tbl-name{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.date-short{display:none}
 
 /* Progress bar */
 .prog-bar{height:5px;border-radius:3px;background:var(--c-border);overflow:hidden;width:80px;display:inline-block;vertical-align:middle}
@@ -529,7 +547,7 @@ td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
 .prog-fill.warn{background:var(--c-warn)}
 
 /* Badges */
-.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:100px;font-size:11.5px;font-weight:600;line-height:1.4}
+.badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:6px;font-size:11.5px;font-weight:600;line-height:1.4;white-space:nowrap}
 .badge-green{background:#dcfce7;color:#15803d}
 .badge-red{background:#fee2e2;color:#dc2626}
 .badge-blue{background:#dbeafe;color:#1d4ed8}
@@ -568,16 +586,19 @@ input:checked+.slider:before{transform:translateX(20px)}
 .chart-wrap{position:relative;height:220px}
 
 /* Section header */
-.section-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:8px}
-.section-title{font-size:16px;font-weight:700}
-.section-sub{font-size:12px;color:var(--c-text2)}
+.section-hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px}
+.section-title{font-size:17px;font-weight:700;letter-spacing:-.2px}
+.section-sub{font-size:12px;color:var(--c-text2);margin-top:2px}
 
 /* Sections */
 section{display:none}
 section.active{display:block}
 
 /* Control strip */
-.ctrl-strip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 18px;background:var(--c-surface);border-radius:12px;box-shadow:0 1px 4px rgba(0,0,0,.06);margin-bottom:20px;font-size:13px}
+.ctrl-strip{display:flex;align-items:center;gap:0;flex-wrap:wrap;padding:0;background:var(--c-surface);border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.04);border:1px solid var(--c-border);margin-bottom:24px;font-size:13px;overflow:hidden}
+.ctrl-group{display:flex;align-items:center;gap:10px;padding:10px 16px}
+.ctrl-group-state{flex:1;gap:12px}
+.ctrl-group-action{background:var(--c-bg);border-left:1px solid var(--c-border);gap:8px}
 .ctrl-divider{width:1px;height:22px;background:var(--c-border);flex-shrink:0}
 .ctrl-item{display:flex;align-items:center;gap:7px}
 .ctrl-spacer{flex:1}
@@ -607,20 +628,21 @@ section.active{display:block}
 .mobile-nav-inner{display:flex}
 .mnav-btn{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 0 8px;font-size:10px;color:var(--c-text2);background:none;border:none;cursor:pointer;transition:color .15s}
 .mnav-btn svg{width:22px;height:22px}
-.mnav-btn.active{color:var(--c-primary)}
+.mnav-btn.active{color:var(--c-primary);box-shadow:inset 0 2px 0 var(--c-primary)}
 
 /* Refresh timestamp */
 .refresh-ts{font-size:11px;color:var(--c-text2)}
 
 /* Responsive — tablet */
 @media(max-width:1024px){
-  :root{--sidebar-w:64px}
+  :root{--sidebar-w:60px}
   .sb-logo-text,.sb-logo-sub,.sb-nav li a span,.sb-section,.sb-status span{display:none}
   .sb-logo{justify-content:center;padding:16px 0}
-  .sb-nav li a{justify-content:center;padding:10px 0}
-  .main{padding:16px}
+  .sb-nav li a{justify-content:center;padding:12px 0;border-radius:10px}
+  .sb-status{justify-content:center;padding:10px 0}
+  .sb-dot{width:8px;height:8px}
+  .main{padding:20px}
   .kpi-grid{grid-template-columns:repeat(2,1fr)}
-  .ring-row{grid-template-columns:repeat(4,1fr)}
   .grid-bot{grid-template-columns:1fr}
 }
 /* Responsive — mobile */
@@ -629,11 +651,45 @@ section.active{display:block}
   .main{margin-left:0;padding:12px;padding-bottom:78px}
   .mobile-nav{display:block}
   .kpi-grid{grid-template-columns:repeat(2,1fr);gap:10px}
-  .kpi-value{font-size:24px}
-  .ring-row{grid-template-columns:repeat(4,1fr);gap:8px}
+  .kpi-card{padding:16px 16px 14px;border-radius:14px}
+  .kpi-value{font-size:24px;letter-spacing:-.4px}
+  .kpi-label{font-size:9.5px;margin-bottom:7px;letter-spacing:.5px}
   .grid-bot{grid-template-columns:1fr}
-  .ctrl-strip{gap:8px;padding:10px 12px}
+  .ctrl-strip{font-size:12px;flex-direction:column;gap:0}
+  .ctrl-group{width:100%;box-sizing:border-box;padding:8px 10px;gap:6px}
+  .ctrl-group-action{border-left:none;border-top:1px solid var(--c-border)}
+  .ctrl-strip .ctrl-divider{display:none}
   .chart-wrap{height:180px}
+  #tradeAmtInp{width:85px !important;padding:5px 7px !important;font-size:12px !important}
+  .btn-sm{padding:4px 8px;font-size:11.5px}
+  .ring-card{padding:10px 4px}
+  .ring-label{font-size:10px;margin-bottom:6px}
+  .ring-canvas-wrap{width:56px;height:56px}
+  .ring-pct{font-size:13px}
+  .kpi-sub{white-space:normal;overflow:visible;text-overflow:unset;font-size:10.5px}
+  .kpi-value{font-size:20px}
+  .date-short{display:inline}
+  .date-full{display:none}
+  .tbl-name{max-width:100px}
+  /* 이력 테이블: 진입가(5), 청산가(6), 구분(7) 숨김 — 종목·청산일·사유·PnL만 표시 */
+  #sec-history thead th:nth-child(5),
+  #sec-history thead th:nth-child(6),
+  #sec-history thead th:nth-child(7),
+  #histTbody td:nth-child(5),
+  #histTbody td:nth-child(6),
+  #histTbody td:nth-child(7){display:none}
+  /* 포지션 테이블: 진입가(2)·TP/SL(4)·신호점수(7)·구분(8) 숨김 — 종목·현재가·진행·PnL·액션만 표시 */
+  #sec-positions thead th:nth-child(2),
+  #sec-positions thead th:nth-child(4),
+  #sec-positions thead th:nth-child(7),
+  #sec-positions thead th:nth-child(8),
+  #posTbody td:nth-child(2),
+  #posTbody td:nth-child(4),
+  #posTbody td:nth-child(7),
+  #posTbody td:nth-child(8){display:none}
+  /* td 텍스트 줄바꿈 허용 + 패딩 축소 */
+  td{white-space:normal;padding:9px 8px;font-size:12px}
+  thead th{padding:8px 8px;font-size:10.5px}
 }
 </style>
 </head>
@@ -689,29 +745,30 @@ section.active{display:block}
 
 <!-- Control strip -->
 <div class="ctrl-strip">
-  <div class="ctrl-item" style="gap:5px">
-    <svg width="14" height="14" viewBox="0 0 20 20" fill="var(--c-text2)"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
-    <span id="nowTs" style="font-size:12px;color:var(--c-text2)">--</span>
+  <!-- 상태 영역 -->
+  <div class="ctrl-group ctrl-group-state">
+    <div class="ctrl-item" style="gap:5px">
+      <svg width="14" height="14" viewBox="0 0 20 20" fill="var(--c-text2)"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
+      <span id="nowTs" style="font-size:12px;color:var(--c-text2)">--</span>
+    </div>
+    <div class="ctrl-divider"></div>
+    <div class="ctrl-item">
+      <span style="color:var(--c-text2)">자동매매</span>
+      <label class="toggle"><input type="checkbox" id="atToggle" onchange="toggleAutoTrade(this.checked)"><span class="slider"></span></label>
+      <span id="atLabel" style="font-size:12px;font-weight:700">OFF</span>
+    </div>
+    <div class="ctrl-spacer"></div>
+    <span id="kisModeBadge" class="badge badge-blue"></span>
   </div>
-  <div class="ctrl-divider"></div>
-  <div class="ctrl-item">
-    <span style="color:var(--c-text2)">자동매매</span>
-    <label class="toggle"><input type="checkbox" id="atToggle" onchange="toggleAutoTrade(this.checked)"><span class="slider"></span></label>
-    <span id="atLabel" style="font-size:12px;font-weight:700">OFF</span>
-  </div>
-  <div class="ctrl-divider"></div>
-  <div class="ctrl-item">
-    <button class="btn btn-outline btn-sm" onclick="sendPause()">⏸ 정지</button>
-    <button class="btn btn-outline btn-sm" onclick="sendResume()">▶ 재개</button>
-  </div>
-  <div class="ctrl-divider"></div>
-  <div class="ctrl-item">
+  <!-- 액션 영역 -->
+  <div class="ctrl-group ctrl-group-action">
+    <button class="btn btn-outline btn-sm" onclick="sendPause()"><svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z"/></svg>정지</button>
+    <button class="btn btn-outline btn-sm" onclick="sendResume()"><svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 0 0 4 4.11v11.78a1.5 1.5 0 0 0 2.3 1.27l9.344-5.891a1.5 1.5 0 0 0 0-2.538L6.3 2.84Z"/></svg>재개</button>
+    <div class="ctrl-divider"></div>
     <span style="color:var(--c-text2)">종목당</span>
-    <input type="number" id="tradeAmtInp" class="form-input" style="width:110px;padding:6px 10px;font-size:13px" placeholder="투자금액">
+    <input type="number" id="tradeAmtInp" class="form-input" style="width:100px;padding:6px 10px;font-size:13px" placeholder="투자금액">
     <button class="btn btn-primary btn-sm" onclick="setTradeAmt()">설정</button>
   </div>
-  <div class="ctrl-spacer"></div>
-  <span id="kisModeBadge" class="badge badge-blue"></span>
 </div>
 
 <!-- ── Overview ── -->
@@ -737,18 +794,22 @@ section.active{display:block}
     <div class="kpi-card">
       <div class="kpi-label">Profit Factor</div>
       <div class="kpi-value" id="kpiPF">--</div>
-      <div class="kpi-sub">누적 PnL <span id="kpiCum">--</span>%</div>
+      <div class="kpi-sub">누적 PnL <span id="kpiCum">--</span>% <span id="kpiCumArrow" style="font-size:14px"></span></div>
     </div>
   </div>
 
   <!-- Bot status + Calendar -->
   <div class="grid-bot">
     <div class="card bot-card">
-      <div class="bot-avatar">
-        <svg viewBox="0 0 26 26"><circle cx="13" cy="9" r="5"/><path d="M4 22c0-4.418 4.03-8 9-8s9 3.582 9 8"/></svg>
+      <div class="bot-header">
+        <div class="bot-avatar">
+          <svg viewBox="0 0 26 26"><circle cx="13" cy="9" r="5"/><path d="M4 22c0-4.418 4.03-8 9-8s9 3.582 9 8"/></svg>
+        </div>
+        <div>
+          <div class="bot-name">눌림목 봇</div>
+          <div class="bot-role" id="botRoleLabel">시스템 연결 중...</div>
+        </div>
       </div>
-      <div class="bot-name">눌림목 봇</div>
-      <div class="bot-role" id="botRoleLabel">시스템 연결 중...</div>
       <div class="bot-stats">
         <div class="bot-stat">
           <div class="bot-stat-label">자동매매</div>
@@ -759,11 +820,11 @@ section.active{display:block}
           <div class="bot-stat-value" id="kisModeStatus">--</div>
         </div>
         <div class="bot-stat">
-          <div class="bot-stat-label">보유 종목</div>
+          <div class="bot-stat-label">보유</div>
           <div class="bot-stat-value" id="botHolding">-- / 5</div>
         </div>
         <div class="bot-stat">
-          <div class="bot-stat-label">종목당 예산</div>
+          <div class="bot-stat-label">예산</div>
           <div class="bot-stat-value" id="botTradeAmt">--</div>
         </div>
       </div>
@@ -782,10 +843,10 @@ section.active{display:block}
     </div>
   </div>
 
-  <!-- Exit reason rings -->
+  <!-- Exit reason bar chart -->
   <div class="card" style="margin-bottom:20px">
     <div class="card-title">청산 사유별 분포 <span id="reasonTotal"></span></div>
-    <div class="ring-row" id="ringRow">
+    <div class="reason-bar-list" id="ringRow">
       <div style="color:var(--c-text2);font-size:13px;padding:8px 0">데이터 로딩 중...</div>
     </div>
   </div>
@@ -922,7 +983,7 @@ section.active{display:block}
 <!-- Sell Modal -->
 <div class="modal-bg" id="sellModal">
   <div class="modal">
-    <h3>📤 수동 청산</h3>
+    <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16.5v.75A.75.75 0 0 0 3.75 18h12.5a.75.75 0 0 0 .75-.75v-.75M10 3v10.5m0 0-3-3m3 3 3-3"/></svg>수동 청산</h3>
     <div class="form-group">
       <label class="form-label">종목</label>
       <input type="text" id="sellName" class="form-input" readonly>
@@ -941,7 +1002,7 @@ section.active{display:block}
 <!-- Edit Modal -->
 <div class="modal-bg" id="editModal">
   <div class="modal">
-    <h3>✏️ TP / SL 수정</h3>
+    <h3 style="display:flex;align-items:center;gap:8px"><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m13.586 3.586 2.828 2.828-9.9 9.9H3.686V13.5l9.9-9.914ZM11.5 5.5l3 3"/></svg>TP / SL 수정</h3>
     <div class="form-group">
       <label class="form-label">종목</label>
       <input type="text" id="editName" class="form-input" readonly>
@@ -1086,9 +1147,9 @@ function renderCalendar() {
   $("#miniCal").innerHTML = h;
 }
 
-// ── Reason rings ───────────────────────────────────────────────
+// ── Reason bar chart ───────────────────────────────────────────
 const REASON_META = {
-  TP:          {label:"TP 익절",    color:"#2ECC88"},
+  TP:          {label:"TP 익절",    color:"#10B981"},
   TP1:         {label:"TP1 분할",   color:"#22c55e"},
   SL:          {label:"SL 손절",    color:"#EF4444"},
   HARD_SL:     {label:"하드 SL",   color:"#dc2626"},
@@ -1096,66 +1157,72 @@ const REASON_META = {
   EXPIRE:      {label:"만료",       color:"#94a3b8"},
   MANUAL_SELL: {label:"수동 청산", color:"#3B82F6"},
 };
-const ringCharts = {};
 
 function renderRings(reasons) {
   const total = Object.values(reasons).reduce((a, b) => a + b, 0);
   $("#reasonTotal").textContent = total ? `전체 ${total}건` : "";
   const row = $("#ringRow");
   row.innerHTML = "";
-  Object.entries(REASON_META).forEach(([k, meta]) => {
+  // Sort by count descending
+  const sorted = Object.entries(REASON_META).sort(([a], [b]) => (reasons[b]||0) - (reasons[a]||0));
+  sorted.forEach(([k, meta]) => {
     const cnt = reasons[k] || 0;
     const pct = total ? Math.round(cnt / total * 100) : 0;
-    const div = document.createElement("div");
-    div.className = "ring-card";
-    div.innerHTML = `
-      <div class="ring-label">${meta.label}</div>
-      <div class="ring-canvas-wrap">
-        <canvas id="ring_${k}" width="72" height="72"></canvas>
-        <div class="ring-center">
-          <div class="ring-pct" style="color:${meta.color}">${pct}%</div>
-          <div class="ring-count">${cnt}건</div>
-        </div>
-      </div>`;
-    row.appendChild(div);
-    if (ringCharts[k]) ringCharts[k].destroy();
-    const ctx = document.getElementById("ring_" + k).getContext("2d");
-    ringCharts[k] = new Chart(ctx, {
-      type: "doughnut",
-      data: {datasets: [{
-        data: [cnt, Math.max(0, total - cnt)],
-        backgroundColor: [meta.color, "#F2F6FB"],
-        borderWidth: 0
-      }]},
-      options: {
-        cutout: "72%", responsive: false,
-        plugins: {legend: {display: false}, tooltip: {enabled: false}}
-      }
-    });
+    const row2 = document.createElement("div");
+    row2.className = "reason-bar-row";
+    row2.innerHTML = `
+      <div class="reason-bar-label">${meta.label}</div>
+      <div class="reason-bar-track">
+        <div class="reason-bar-fill" style="width:${pct}%;background:${meta.color}"></div>
+      </div>
+      <div class="reason-bar-meta"><span class="reason-bar-pct">${pct}%</span> <span style="color:var(--c-text2)">${cnt}건</span></div>`;
+    row.appendChild(row2);
   });
+  if (!total) row.innerHTML = '<div style="color:var(--c-text2);font-size:13px;padding:8px 0">거래 데이터 없음</div>';
 }
 
 // ── Equity chart ───────────────────────────────────────────────
 let equityChart = null;
 function renderEquity(dates, curve) {
-  const ctx = $("#equityChart").getContext("2d");
+  const canvas = $("#equityChart");
+  const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
+
+  // Canvas gradient fill: top opacity → transparent
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200);
+  grad.addColorStop(0, "rgba(16,185,129,.18)");
+  grad.addColorStop(1, "rgba(16,185,129,0)");
+
   equityChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: dates,
       datasets: [{
         label: "누적 PnL (%)", data: curve,
-        borderColor: "#2ECC88", backgroundColor: "rgba(46,204,136,.1)",
-        fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2
+        borderColor: "#10B981", backgroundColor: grad,
+        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2.5
       }]
     },
     options: {
       responsive: true, maintainAspectRatio: false,
-      plugins: {legend: {display: false}},
+      interaction: {mode: "index", intersect: false},
+      plugins: {
+        legend: {display: false},
+        tooltip: {
+          callbacks: {
+            label: item => " " + (item.raw >= 0 ? "+" : "") + item.raw.toFixed(2) + "%"
+          }
+        }
+      },
       scales: {
         x: {ticks: {maxTicksLimit: 8, font: {size: 11}, color: "#94a3b8"}, grid: {display: false}},
-        y: {ticks: {font: {size: 11}, color: "#94a3b8", callback: v => v.toFixed(0) + "%"}, grid: {color: "#f0f4f8"}}
+        y: {
+          ticks: {font: {size: 11}, color: "#94a3b8", callback: v => v.toFixed(0) + "%"},
+          grid: {
+            color: ctx2 => ctx2.tick.value === 0 ? "rgba(15,23,42,.25)" : "#f0f4f8",
+            lineWidth: ctx2 => ctx2.tick.value === 0 ? 1.5 : 1,
+          }
+        }
       }
     }
   });
@@ -1183,6 +1250,8 @@ function renderKpi(stats) {
   pfEl.textContent = pf.toFixed(2);
   pfEl.className = "kpi-value " + (pf >= 1 ? "green" : "red");
   $("#kpiCum").textContent = (cum_pct >= 0 ? "+" : "") + cum_pct.toFixed(1);
+  const arrow = $("#kpiCumArrow");
+  if (arrow) { arrow.textContent = cum_pct >= 0 ? "↑" : "↓"; arrow.style.color = cum_pct >= 0 ? "#059669" : "#DC2626"; }
 }
 
 // ── Positions table ────────────────────────────────────────────
@@ -1256,12 +1325,14 @@ function renderHistory(history) {
     const pnl = parseFloat(h.pnl_pct);
     const pnlSt = pnl >= 0 ? "color:#16a34a;font-weight:600" : "color:#dc2626;font-weight:600";
     const auto = h.auto_traded ? `<span class="badge badge-blue" style="font-size:10px">자동</span>` : `<span class="badge badge-gray" style="font-size:10px">수동</span>`;
+    const exitDate = h.exit_date || "--";
+    const shortDate = exitDate.length === 10 ? exitDate.slice(5) : exitDate;
     return `<tr>
       <td>
-        <div style="font-weight:600">${h.name}</div>
+        <div class="tbl-name" style="font-weight:600" title="${h.name}">${h.name}</div>
         <div style="font-size:11px;color:var(--c-text2)">${h.ticker}</div>
       </td>
-      <td style="font-size:12px;color:var(--c-text2)">${h.exit_date||"--"}</td>
+      <td style="font-size:12px;color:var(--c-text2)"><span class="date-full">${exitDate}</span><span class="date-short">${shortDate}</span></td>
       <td>${reasonBadge(h.exit_reason)}</td>
       <td style="${pnlSt}">${(pnl>=0?"+":"")+pnl.toFixed(2)}%</td>
       <td style="font-size:12px">${h.entry_price ? h.entry_price.toLocaleString() : "--"}</td>
@@ -1378,7 +1449,7 @@ function renderBt(key) {
       labels: d.dates || [],
       datasets: [{
         label: d.label || key, data: d.curve || [],
-        borderColor: "#2ECC88", backgroundColor: "rgba(46,204,136,.1)",
+        borderColor: "#10B981", backgroundColor: "rgba(16,185,129,.1)",
         fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
       }]
     },

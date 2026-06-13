@@ -53,7 +53,9 @@ def _kis_base() -> str:
             if read_env("KIS_MODE", "paper") == "real"
             else "https://openapivts.koreainvestment.com:29443")
 
-DASHBOARD_TOKEN  = read_env("DASHBOARD_TOKEN", "scanner2024")
+DASHBOARD_TOKEN  = read_env("DASHBOARD_TOKEN", "")
+if not DASHBOARD_TOKEN or len(DASHBOARD_TOKEN) < 20:
+    raise RuntimeError("DASHBOARD_TOKEN must be set in .env (minimum 20 characters)")
 _token_cache     = {"token": None, "expires_at": 0}
 _token_lock      = threading.Lock()
 _cache_lock      = threading.Lock()

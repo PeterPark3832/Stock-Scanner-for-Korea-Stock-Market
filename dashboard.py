@@ -419,7 +419,14 @@ async def api_position_update(ticker: str, request: Request, token: str = ""):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(token: str = ""):
     auth(token)
-    return HTMLResponse(HTML.replace("__TOKEN__", token))
+    import holidays as _hol
+    now = datetime.now()
+    kr = _hol.KR(years=[now.year, now.year + 1])
+    hols = {str(d): name for d, name in sorted(kr.items())}
+    return HTMLResponse(
+        HTML.replace("__TOKEN__", token)
+            .replace("__HOLIDAYS__", json.dumps(hols, ensure_ascii=False))
+    )
 
 # ── HTML — TeamHub 라이트 테마 ────────────────────────────────
 HTML = r"""<!DOCTYPE html>
@@ -519,11 +526,16 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Inter','Segoe UI',s
 .cal-header{display:grid;grid-template-columns:repeat(7,1fr);margin-bottom:3px}
 .cal-h{font-size:10px;color:var(--c-text2);text-align:center;font-weight:600;padding:3px 0}
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-.cal-d{font-size:12px;text-align:center;padding:5px 0;border-radius:6px}
+.cal-d{font-size:12px;text-align:center;padding:4px 0 3px;border-radius:6px;cursor:default;line-height:1.2}
 .cal-d.today{background:var(--c-primary);color:#fff;font-weight:700}
 .cal-d.other-month{color:#cbd5e1}
 .cal-d.sat{color:#3b82f6}
 .cal-d.sun{color:#ef4444}
+.cal-d.holiday{color:#ef4444}
+.cal-d.today.holiday,.cal-d.today.sat,.cal-d.today.sun{color:#fff}
+.hol-dot{display:block;width:3px;height:3px;background:#ef4444;border-radius:50%;margin:1px auto 0}
+.cal-d.today .hol-dot{background:rgba(255,255,255,.8)}
+.cal-d.sat .hol-dot{background:#3b82f6}
 .schedule-list{margin-top:14px;border-top:1px solid var(--c-border);padding-top:10px}
 .schedule-item{display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--c-border);font-size:12.5px}
 .schedule-item:last-child{border-bottom:none}
@@ -1028,6 +1040,7 @@ section.active{display:block}
 
 <script>
 const TOKEN = "__TOKEN__";
+const KR_HOLIDAYS = __HOLIDAYS__;
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -1139,11 +1152,16 @@ function renderCalendar() {
   for (let i = 0; i < firstDow; i++) h += `<div class="cal-d other-month"></div>`;
   for (let d = 1; d <= daysInMonth; d++) {
     const dow = (firstDow + d - 1) % 7;
+    const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const holName = KR_HOLIDAYS[dateStr];
     let cls = "cal-d";
     if (d === today) cls += " today";
+    if (dow === 0) cls += " sun";
     else if (dow === 6) cls += " sat";
-    else if (dow === 0) cls += " sun";
-    h += `<div class="${cls}">${d}</div>`;
+    if (holName && dow > 0 && dow < 6) cls += " holiday";
+    const dot = holName ? `<span class="hol-dot"></span>` : "";
+    const title = holName ? ` title="${holName}"` : "";
+    h += `<div class="${cls}"${title}>${d}${dot}</div>`;
   }
   h += `</div>`;
   $("#miniCal").innerHTML = h;

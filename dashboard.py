@@ -465,25 +465,26 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Scanner v5.1</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://api.fontshare.com" crossorigin>
+<link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --c-primary:#10B981;--c-primary-dk:#059669;
-  --c-bg:#F1F5F9;--c-surface:#fff;--c-surface2:#F8FAFC;
-  --c-text:#0F172A;--c-text2:#64748B;
-  --c-border:#E2E8F0;
-  --c-danger:#EF4444;--c-warn:#F59E0B;--c-info:#3B82F6;
+  --c-primary:#00C805;--c-primary-dk:#00A843;
+  --c-up:#00A843;--c-up-bright:#00C805;--c-down:#F0463A;
+  --c-bg:#FAFAFA;--c-surface:#fff;--c-surface2:#F6F7F8;
+  --c-text:#0A0B0D;--c-text2:#6F7780;
+  --c-border:#EAECEF;
+  --c-danger:#F0463A;--c-warn:#F59E0B;--c-info:#3B82F6;
   --sidebar-w:220px;
   /* dark sidebar tokens */
-  --sb-bg:#0F172A;--sb-border:rgba(255,255,255,.08);
-  --sb-text:#94A3B8;--sb-text-hover:#E2E8F0;
-  --sb-active-bg:rgba(255,255,255,.09);
+  --sb-bg:#0A0B0D;--sb-border:rgba(255,255,255,.07);
+  --sb-text:#9AA0A6;--sb-text-hover:#F1F3F5;
+  --sb-active-bg:rgba(255,255,255,.08);
 }
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 html{overflow-x:hidden}
-body{background:var(--c-bg);color:var(--c-text);font-family:'Inter','Segoe UI',system-ui,sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased;overflow-x:hidden;max-width:100vw}
+body{background:var(--c-bg);color:var(--c-text);font-family:'Satoshi','Inter',system-ui,sans-serif;overscroll-behavior:none;-webkit-font-smoothing:antialiased;overflow-x:hidden;max-width:100vw}
 
 /* Layout */
 .layout{display:flex;min-height:100vh}
@@ -511,19 +512,44 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Inter','Segoe UI',s
 .sb-status span{color:var(--sb-text)}
 
 /* Card */
-.card{background:var(--c-surface);border-radius:14px;padding:22px;box-shadow:0 1px 2px rgba(0,0,0,.04);border:1px solid var(--c-border)}
+.card{background:var(--c-surface);border-radius:16px;padding:22px;box-shadow:none;border:1px solid var(--c-border)}
 .card-title{font-size:11px;font-weight:700;color:var(--c-text2);margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;text-transform:uppercase;letter-spacing:.5px}
 
-/* KPI strip */
-.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
-.kpi-card{background:#fff;border-radius:14px;padding:24px 22px 20px;box-shadow:0 0 0 1px rgba(15,23,42,.06),0 4px 20px rgba(15,23,42,.07);transition:box-shadow .2s,transform .2s;will-change:transform}
-.kpi-card:hover{box-shadow:0 0 0 1px rgba(15,23,42,.09),0 8px 32px rgba(15,23,42,.11);transform:translateY(-2px)}
-.kpi-label{font-size:10.5px;color:var(--c-text2);font-weight:600;letter-spacing:.7px;margin-bottom:10px;text-transform:uppercase}
-.kpi-value{font-size:32px;font-weight:700;letter-spacing:-.8px;line-height:1;font-variant-numeric:tabular-nums}
-.kpi-sub{font-size:12px;color:var(--c-text2);margin-top:8px;min-width:0}
-.kpi-value.green{color:#059669}
-.kpi-value.red{color:#DC2626}
+/* KPI strip (rebalance tab) */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.kpi-card{background:var(--c-surface);border-radius:14px;padding:18px 18px 16px;border:1px solid var(--c-border)}
+.kpi-label{font-size:11px;color:var(--c-text2);font-weight:500;letter-spacing:.2px;margin-bottom:9px}
+.kpi-value{font-size:27px;font-weight:700;letter-spacing:-.6px;line-height:1;font-variant-numeric:tabular-nums}
+.kpi-sub{font-size:12px;color:var(--c-text2);margin-top:7px;min-width:0}
+.kpi-value.green{color:var(--c-up)}
+.kpi-value.red{color:var(--c-down)}
 .kpi-value.neutral{color:var(--c-text)}
+
+/* Hero — Robinhood-style portfolio header */
+.hero{padding:6px 2px 22px}
+.hero-label{font-size:13px;color:var(--c-text2);font-weight:500;margin-bottom:9px}
+.hero-value{font-size:46px;font-weight:900;letter-spacing:-1.6px;line-height:1;font-variant-numeric:tabular-nums;color:var(--c-text)}
+.hero-delta{display:inline-flex;align-items:center;gap:7px;margin-top:14px;font-size:16px;font-weight:700;font-variant-numeric:tabular-nums}
+.hero-delta.up{color:var(--c-up)}
+.hero-delta.down{color:var(--c-down)}
+.hero-arrow{display:inline-flex;align-items:center}
+.hero-delta-sub{font-size:13px;font-weight:500;color:var(--c-text2)}
+.hero-meta{display:flex;align-items:center;gap:12px;margin-top:14px;font-size:13px;color:var(--c-text2)}
+.hero-meta b{color:var(--c-text);font-weight:600;font-variant-numeric:tabular-nums}
+.dot-sep{width:3px;height:3px;border-radius:50%;background:var(--c-border)}
+
+/* Compact secondary stat row */
+.stat-row{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--c-border);border-radius:14px;overflow:hidden;margin-bottom:20px;background:var(--c-surface)}
+.stat{padding:16px 18px;border-right:1px solid var(--c-border)}
+.stat:last-child{border-right:none}
+.stat-label{font-size:11px;color:var(--c-text2);font-weight:500;margin-bottom:6px}
+.stat-num{font-size:19px;font-weight:700;letter-spacing:-.3px;font-variant-numeric:tabular-nums;color:var(--c-text)}
+@media(max-width:640px){
+  .hero-value{font-size:38px;letter-spacing:-1.2px}
+  .stat{padding:13px 11px}
+  .stat-num{font-size:16px}
+  .hero-meta{flex-wrap:wrap;gap:8px}
+}
 
 /* Bot card */
 .grid-bot{display:grid;grid-template-columns:280px 1fr;gap:16px;margin-bottom:20px}
@@ -600,8 +626,8 @@ td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all .15s;white-space:nowrap}
-.btn-primary{background:var(--c-primary);color:#fff}
-.btn-primary:hover{background:var(--c-primary-dk)}
+.btn-primary{background:var(--c-primary);color:#04210A;font-weight:700}
+.btn-primary:hover{background:var(--c-primary-dk);color:#fff}
 .btn-outline{background:transparent;border:1.5px solid var(--c-border);color:var(--c-text)}
 .btn-outline:hover{background:var(--c-bg)}
 .btn-danger{background:#fee2e2;color:#dc2626;border:1.5px solid #fecaca}
@@ -664,7 +690,10 @@ section.active{display:block}
 .bt-tab.active{border-color:var(--c-primary);color:var(--c-primary);background:#E8F9F2}
 
 /* Toast */
-.toast{position:fixed;top:20px;right:20px;background:#1A1D23;color:#fff;padding:12px 18px;border-radius:10px;font-size:13px;z-index:9999;opacity:0;transform:translateY(-8px);transition:all .25s;pointer-events:none;max-width:320px}
+.toast{position:fixed;top:20px;right:20px;background:#0A0B0D;color:#fff;padding:12px 16px;border-radius:12px;font-size:13px;font-weight:500;z-index:9999;opacity:0;transform:translateY(-8px);transition:all .25s;pointer-events:none;max-width:320px;border-left:3px solid var(--c-text2)}
+.toast[data-type=ok]{border-left-color:var(--c-up-bright)}
+.toast[data-type=err]{border-left-color:var(--c-down)}
+.toast[data-type=warn]{border-left-color:var(--c-warn)}
 .toast.show{opacity:1;transform:translateY(0)}
 
 /* Mobile nav */
@@ -789,31 +818,47 @@ section.active{display:block}
 <!-- ── Overview ── -->
 <section id="sec-overview" class="active">
 
-  <!-- KPI -->
-  <div class="kpi-grid">
-    <div class="kpi-card">
-      <div class="kpi-label">총 평가금액</div>
-      <div class="kpi-value neutral" id="kpiTotal">--</div>
-      <div class="kpi-sub">주식 <span id="kpiEquity">--</span> + 현금 <span id="kpiCash">--</span></div>
+  <!-- Hero: 총 평가금액 -->
+  <div class="hero">
+    <div class="hero-label">총 평가금액</div>
+    <div class="hero-value" id="kpiTotal">--</div>
+    <div class="hero-delta up" id="kpiDelta">
+      <span class="hero-arrow" id="kpiRetArrow"></span>
+      <span id="kpiRet">--%</span>
+      <span class="hero-delta-sub">최초 리밸런싱 대비</span>
     </div>
-    <div class="kpi-card">
-      <div class="kpi-label">누적 수익률</div>
-      <div class="kpi-value" id="kpiRet">--%</div>
-      <div class="kpi-sub">최초 리밸런싱 대비 <span id="kpiRetArrow" style="font-size:14px"></span></div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">보유 종목 수</div>
-      <div class="kpi-value neutral" id="kpiCount">--</div>
-      <div class="kpi-sub">목표 3종목 분산</div>
-    </div>
-    <div class="kpi-card">
-      <div class="kpi-label">현금 비중</div>
-      <div class="kpi-value neutral" id="kpiCashW">--%</div>
-      <div class="kpi-sub">주문가능 현금 기준</div>
+    <div class="hero-meta">
+      <span>주식 <b id="kpiEquity">--</b></span>
+      <span class="dot-sep"></span>
+      <span>현금 <b id="kpiCash">--</b></span>
     </div>
   </div>
 
-  <!-- Bot status + Calendar -->
+  <!-- Portfolio chart -->
+  <div class="card" style="margin-bottom:20px;padding:18px 20px">
+    <div class="section-hd" style="margin-bottom:6px">
+      <div class="card-title" style="margin-bottom:0">포트폴리오 누적 수익률</div>
+      <span class="refresh-ts" id="eqTs"></span>
+    </div>
+    <div class="chart-wrap" style="height:260px"><canvas id="equityChart"></canvas></div>
+  </div>
+
+  <!-- Secondary stats -->
+  <div class="stat-row">
+    <div class="stat"><div class="stat-label">보유 종목</div><div class="stat-num" id="kpiCount">--</div></div>
+    <div class="stat"><div class="stat-label">현금 비중</div><div class="stat-num" id="kpiCashW">--%</div></div>
+    <div class="stat"><div class="stat-label">자동매매</div><div class="stat-num" id="kpiAuto">--</div></div>
+  </div>
+
+  <!-- Holdings allocation -->
+  <div class="card" style="margin-bottom:20px">
+    <div class="card-title">현재 자산 배분 <span id="allocTotal"></span></div>
+    <div class="reason-bar-list" id="allocRow">
+      <div style="color:var(--c-text2);font-size:13px;padding:8px 0">데이터 로딩 중...</div>
+    </div>
+  </div>
+
+  <!-- Bot status + Calendar (secondary) -->
   <div class="grid-bot">
     <div class="card bot-card">
       <div class="bot-header">
@@ -850,26 +895,6 @@ section.active{display:block}
         <div class="schedule-item"><span class="schedule-time">09:00</span><span class="schedule-desc">Heartbeat — 봇 생존 확인</span></div>
       </div>
     </div>
-  </div>
-
-  <!-- Current allocation bar chart -->
-  <div class="card" style="margin-bottom:20px">
-    <div class="card-title">현재 자산 배분 <span id="allocTotal"></span></div>
-    <div class="reason-bar-list" id="allocRow">
-      <div style="color:var(--c-text2);font-size:13px;padding:8px 0">데이터 로딩 중...</div>
-    </div>
-  </div>
-
-  <!-- Return curve -->
-  <div class="card">
-    <div class="section-hd">
-      <div>
-        <div class="section-title">포트폴리오 누적 수익률</div>
-        <div class="section-sub">리밸런싱 시점별 평가금액 기준 (%)</div>
-      </div>
-      <span class="refresh-ts" id="eqTs"></span>
-    </div>
-    <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
   </div>
 
 </section>
@@ -1015,7 +1040,7 @@ function loadRebalance() {
     if (d.min_required && d.total_value < d.min_required) {
       const short = d.min_required - d.total_value;
       warn.style.display = "block";
-      warn.innerHTML = `⚠️ 현재 평가금액(${won(d.total_value)})이 최소 필요금액(${won(d.min_required)})보다 적어 일부 종목을 1주도 매수할 수 없습니다. 약 <b>${won(short)}</b> 추가 입금이 필요합니다.`;
+      warn.innerHTML = `<svg width="15" height="15" viewBox="0 0 20 20" fill="currentColor" style="vertical-align:-2px;margin-right:5px"><path fill-rule="evenodd" d="M8.485 2.495c.673-1.167 2.357-1.167 3.03 0l6.28 10.875c.673 1.167-.17 2.625-1.515 2.625H3.72c-1.347 0-2.189-1.458-1.515-2.625L8.485 2.495ZM10 5a.75.75 0 0 1 .75.75v3.5a.75.75 0 0 1-1.5 0v-3.5A.75.75 0 0 1 10 5Zm0 9a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clip-rule="evenodd"/></svg>현재 평가금액(${won(d.total_value)})이 최소 필요금액(${won(d.min_required)})보다 적어 일부 종목을 1주도 매수할 수 없습니다. 약 <b>${won(short)}</b> 추가 입금이 필요합니다.`;
     } else {
       warn.style.display = "none";
     }
@@ -1075,7 +1100,12 @@ function mnavSet(btn) {
 // ── Toast ──────────────────────────────────────────────────────
 function toast(msg, dur=2800) {
   const el = $("#toast");
-  el.textContent = msg;
+  let type = "info";
+  if (/^[✅▶]/.test(msg)) type = "ok";
+  else if (/^[❌]/.test(msg)) type = "err";
+  else if (/^[⚠⏸]/.test(msg)) type = "warn";
+  el.textContent = msg.replace(/^[✅❌⚠▶⏸️\s]+/, "");
+  el.dataset.type = type;
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), dur);
 }
@@ -1142,7 +1172,7 @@ function renderCalendar() {
 }
 
 // ── Allocation bar chart ───────────────────────────────────────
-const ALLOC_COLORS = ["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EC4899","#14B8A6"];
+const ALLOC_COLORS = ["#00C805","#0A0B0D","#00A843","#6F7780","#9AA0A6","#C9CDD2"];
 function renderAllocation(holdings, cashWeight) {
   const row = $("#allocRow");
   const items = (holdings || []).map(h => ({label: h.name, pct: h.current_weight || 0}));
@@ -1169,17 +1199,20 @@ function renderReturnCurve(dates, curve) {
   const canvas = $("#equityChart");
   const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
-  const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200);
-  grad.addColorStop(0, "rgba(16,185,129,.18)");
-  grad.addColorStop(1, "rgba(16,185,129,0)");
+  const up = (curve.length ? curve[curve.length - 1] : 0) >= 0;
+  const line = up ? "#00C805" : "#F0463A";
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
+  grad.addColorStop(0, up ? "rgba(0,200,5,.16)" : "rgba(240,70,58,.16)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
   equityChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: dates,
       datasets: [{
         label: "누적 수익률 (%)", data: curve,
-        borderColor: "#10B981", backgroundColor: grad,
-        fill: true, tension: 0.3, pointRadius: dates.length <= 12 ? 3 : 0, borderWidth: 2.5
+        borderColor: line, backgroundColor: grad,
+        fill: true, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
+        pointHoverBackgroundColor: line, pointHoverBorderColor: "#fff", borderWidth: 2
       }]
     },
     options: {
@@ -1224,13 +1257,18 @@ function loadPortfolio() {
       $("#kpiEquity").textContent = won(d.equity);
       $("#kpiCash").textContent   = won(d.cash);
       const ret = d.total_return || 0;
-      const retEl = $("#kpiRet");
-      retEl.textContent = (ret >= 0 ? "+" : "") + ret.toFixed(2) + "%";
-      retEl.className = "kpi-value " + (ret >= 0 ? "green" : "red");
+      const upRet = ret >= 0;
+      $("#kpiRet").textContent = (upRet ? "+" : "") + ret.toFixed(2) + "%";
+      const delta = $("#kpiDelta");
+      if (delta) delta.className = "hero-delta " + (upRet ? "up" : "down");
       const arrow = $("#kpiRetArrow");
-      if (arrow) { arrow.textContent = ret >= 0 ? "↑" : "↓"; arrow.style.color = ret >= 0 ? "#059669" : "#DC2626"; }
+      if (arrow) arrow.innerHTML = upRet
+        ? '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 3.5 16 11h-4v5.5H8V11H4l6-7.5Z"/></svg>'
+        : '<svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor"><path d="M10 16.5 4 9h4V3.5h4V9h4l-6 7.5Z"/></svg>';
       $("#kpiCount").textContent = d.count;
       $("#kpiCashW").textContent = (d.cash_weight || 0).toFixed(1) + "%";
+      const ka = $("#kpiAuto");
+      if (ka) { ka.textContent = at ? "ON" : "OFF"; ka.style.color = at ? "var(--c-up)" : "var(--c-text2)"; }
 
       renderAllocation(d.holdings || [], d.cash_weight || 0);
     })

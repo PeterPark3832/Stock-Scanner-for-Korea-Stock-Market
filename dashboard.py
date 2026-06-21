@@ -6,9 +6,10 @@ Stock Scanner Dashboard v5.1
 접속: http://<서버IP>:8081?token=<DASHBOARD_TOKEN>
 """
 import csv, json, os, re, subprocess, threading, time, requests
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from filelock import FileLock
+import holidays as _holidays
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -359,17 +360,62 @@ def _rebalance_events() -> list[dict]:
     except Exception:
         return []
 
+def _equity_snapshots() -> list[dict]:
+    path = os.path.join(BASE_DIR, "equity_snapshots.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+_bench_cache = {"key": None, "at": 0, "series": None}
+def _benchmark_series(start: str):
+    """KOSPI200(069500) 일별 종가 시계열 {date: close}. FDR, 1시간 캐시."""
+    now = time.time()
+    if _bench_cache["series"] is not None and _bench_cache["key"] == start and now - _bench_cache["at"] < 3600:
+        return _bench_cache["series"]
+    series = {}
+    try:
+        import FinanceDataReader as fdr
+        df = fdr.DataReader("069500", start)
+        if df is not None and not df.empty and "Close" in df.columns:
+            series = {d.strftime("%Y-%m-%d"): float(v) for d, v in df["Close"].items() if v == v and v > 0}
+    except Exception:
+        series = {}
+    _bench_cache.update(key=start, at=now, series=series)
+    return series
+
+def _first_trading_day(y: int, m: int) -> date:
+    d = date(y, m, 1)
+    kr = _holidays.KR(years=y)
+    while d.weekday() >= 5 or d in kr:
+        d += timedelta(days=1)
+    return d
+
+def _next_rebalance_date() -> date:
+    today = datetime.now(KST).date()
+    ft = _first_trading_day(today.year, today.month)
+    if ft <= today:
+        ny, nm = (today.year + 1, 1) if today.month == 12 else (today.year, today.month + 1)
+        ft = _first_trading_day(ny, nm)
+    return ft
+
 @app.get("/api/portfolio")
 def api_portfolio(token: str = ""):
     auth(token)
     snap = _portfolio_snapshot()
-    events = _rebalance_events()
-    base = events[0]["total_value"] if events else (snap["total"] or 0)
+    snaps = _equity_snapshots()
+    base = snaps[0]["total"] if snaps else (snap["total"] or 0)
     ret = round((snap["total"] - base) / base * 100, 2) if base else 0.0
+    nxt = _next_rebalance_date()
+    d_day = (nxt - datetime.now(KST).date()).days
     return JSONResponse({
         "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
         "auto_trade":   read_env("AUTO_TRADE", "false").lower() == "true",
         "kis_mode":     "실전투자" if read_env("KIS_MODE", "paper") == "real" else "모의투자",
+        "next_rebalance": nxt.strftime("%Y-%m-%d"), "d_day": d_day,
         **snap, "total_return": ret,
     })
 
@@ -414,15 +460,35 @@ def api_rebalance(token: str = ""):
 def api_rebalance_history(token: str = ""):
     auth(token)
     events = _rebalance_events()
-    dates, value_curve, return_curve = [], [], []
-    base = events[0]["total_value"] if events else 0
-    for e in events:
-        dates.append(e["ts"][5:16] if len(e.get("ts", "")) >= 16 else e.get("ts", ""))
-        tv = e.get("total_value", 0)
-        value_curve.append(tv)
-        return_curve.append(round((tv - base) / base * 100, 2) if base else 0.0)
+    snaps  = _equity_snapshots()
+    # 일별 평가금액 포인트 (스냅샷) + 오늘 실시간 포인트 보강
+    points = {s["date"]: s.get("total", 0) for s in snaps if s.get("date")}
+    today  = datetime.now(KST).strftime("%Y-%m-%d")
+    if today not in points:
+        live_total = _portfolio_snapshot()["total"]
+        if live_total:
+            points[today] = live_total
+    full_dates = sorted(points)
+    totals = [points[d] for d in full_dates]
+    base = totals[0] if totals else 0
+    return_curve = [round((t - base) / base * 100, 2) if base else 0.0 for t in totals]
+    # 벤치마크(KOSPI200) 정렬·정규화
+    bench_curve = []
+    if full_dates:
+        bs = _benchmark_series(full_dates[0])
+        if bs:
+            keys = sorted(bs)
+            def closest(d):  # d 이하 가장 최근 종가
+                prev = [k for k in keys if k <= d]
+                return bs[prev[-1]] if prev else None
+            raw = [closest(d) for d in full_dates]
+            b0 = next((x for x in raw if x), None)
+            bench_curve = [round((x / b0 - 1) * 100, 2) if (x and b0) else None for x in raw]
+    labels = [d[5:] for d in full_dates]  # MM-DD
+    exec_dates = [e["ts"][:10] for e in events if e.get("ts")]
     return JSONResponse({"events": list(reversed(events)),
-                         "dates": dates, "value_curve": value_curve, "return_curve": return_curve})
+                         "dates": labels, "value_curve": totals, "return_curve": return_curve,
+                         "benchmark_curve": bench_curve, "exec_dates": exec_dates})
 
 @app.post("/api/rebalance/execute")
 def api_rebalance_execute(token: str = ""):
@@ -592,6 +658,10 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Satoshi','Inter',sy
 .hol-dot{display:block;width:3px;height:3px;background:#ef4444;border-radius:50%;margin:1px auto 0}
 .cal-d.today .hol-dot{background:rgba(255,255,255,.8)}
 .cal-d.sat .hol-dot{background:#3b82f6}
+.rebal-dot{display:block;width:3px;height:3px;background:var(--c-primary);border-radius:50%;margin:1px auto 0}
+.cal-d.rebal-exec{background:rgba(0,200,5,.10)}
+.cal-d.rebal-next{box-shadow:inset 0 0 0 1.5px var(--c-primary);font-weight:700;border-radius:6px}
+.cal-d.today .rebal-dot{background:rgba(255,255,255,.9)}
 .schedule-list{margin-top:14px;border-top:1px solid var(--c-border);padding-top:10px}
 .schedule-item{display:flex;align-items:flex-start;gap:10px;padding:6px 0;border-bottom:1px solid var(--c-border);font-size:12.5px}
 .schedule-item:last-child{border-bottom:none}
@@ -887,7 +957,10 @@ section.active{display:block}
     </div>
 
     <div class="card">
-      <div class="card-title">이달 리밸런싱 일정</div>
+      <div class="section-hd" style="margin-bottom:10px">
+        <div class="card-title" style="margin-bottom:0">이달 리밸런싱 일정</div>
+        <span id="ddayBadge" class="badge badge-green" style="display:none"></span>
+      </div>
       <div id="miniCal"></div>
       <div class="schedule-list">
         <div class="schedule-item"><span class="schedule-time">매월 1일</span><span class="schedule-desc">첫 거래일 09:05 자동 리밸런싱</span></div>
@@ -1006,6 +1079,8 @@ section.active{display:block}
 <script>
 const TOKEN = "__TOKEN__";
 const KR_HOLIDAYS = __HOLIDAYS__;
+let REBAL_EXEC = new Set();   // 과거 리밸런싱 실행일 (YYYY-MM-DD)
+let NEXT_REBAL = "";          // 다음 리밸런싱 예정일 (YYYY-MM-DD)
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -1151,13 +1226,18 @@ function renderCalendar() {
     const dow = (firstDow + d - 1) % 7;
     const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     const holName = KR_HOLIDAYS[dateStr];
+    const isExec = REBAL_EXEC.has(dateStr);
+    const isNext = dateStr === NEXT_REBAL;
     let cls = "cal-d";
     if (d === today) cls += " today";
     if (dow === 0) cls += " sun";
     else if (dow === 6) cls += " sat";
     if (holName && dow > 0 && dow < 6) cls += " holiday";
-    const dot = holName ? `<span class="hol-dot"></span>` : "";
-    const title = holName ? ` title="${holName}"` : "";
+    if (isExec) cls += " rebal-exec";
+    if (isNext) cls += " rebal-next";
+    const dot = isExec ? `<span class="rebal-dot"></span>` : (holName ? `<span class="hol-dot"></span>` : "");
+    const titles = [holName, isExec ? "리밸런싱 실행" : null, isNext ? "다음 리밸런싱 예정" : null].filter(Boolean);
+    const title = titles.length ? ` title="${titles.join(' · ')}"` : "";
     h += `<div class="${cls}"${title}>${d}${dot}</div>`;
   }
   h += `</div>`;
@@ -1188,7 +1268,7 @@ function renderAllocation(holdings, cashWeight) {
 
 // ── Return curve ───────────────────────────────────────────────
 let equityChart = null;
-function renderReturnCurve(dates, curve) {
+function renderReturnCurve(dates, curve, benchmark) {
   const canvas = $("#equityChart");
   const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
@@ -1197,23 +1277,29 @@ function renderReturnCurve(dates, curve) {
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
   grad.addColorStop(0, up ? "rgba(0,200,5,.16)" : "rgba(240,70,58,.16)");
   grad.addColorStop(1, "rgba(0,0,0,0)");
+  const hasBench = benchmark && benchmark.some(v => v != null);
+  const datasets = [{
+    label: "내 포트폴리오", data: curve,
+    borderColor: line, backgroundColor: grad,
+    fill: true, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
+    pointHoverBackgroundColor: line, pointHoverBorderColor: "#fff", borderWidth: 2
+  }];
+  if (hasBench) datasets.push({
+    label: "KOSPI200", data: benchmark,
+    borderColor: "#9AA0A6", backgroundColor: "transparent",
+    fill: false, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
+    borderWidth: 1.5, borderDash: [5, 4], spanGaps: true
+  });
   equityChart = new Chart(ctx, {
     type: "line",
-    data: {
-      labels: dates,
-      datasets: [{
-        label: "누적 수익률 (%)", data: curve,
-        borderColor: line, backgroundColor: grad,
-        fill: true, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
-        pointHoverBackgroundColor: line, pointHoverBorderColor: "#fff", borderWidth: 2
-      }]
-    },
+    data: { labels: dates, datasets },
     options: {
       responsive: true, maintainAspectRatio: false,
       interaction: {mode: "index", intersect: false},
       plugins: {
-        legend: {display: false},
-        tooltip: {callbacks: {label: item => " " + (item.raw >= 0 ? "+" : "") + item.raw.toFixed(2) + "%"}}
+        legend: {display: hasBench, position: "top", align: "end",
+                 labels: {boxWidth: 12, boxHeight: 2, font: {size: 11}, color: "#6F7780", usePointStyle: false}},
+        tooltip: {callbacks: {label: item => " " + item.dataset.label + ": " + (item.raw >= 0 ? "+" : "") + (item.raw==null?"-":item.raw.toFixed(2)) + "%"}}
       },
       scales: {
         x: {ticks: {maxTicksLimit: 8, font: {size: 11}, color: "#94a3b8"}, grid: {display: false}},
@@ -1264,14 +1350,30 @@ function loadPortfolio() {
       if (ka) { ka.textContent = at ? "ON" : "OFF"; ka.style.color = at ? "var(--c-up)" : "var(--c-text2)"; }
 
       renderAllocation(d.holdings || [], d.cash_weight || 0);
+
+      // 다음 리밸런싱 D-day 배지 + 캘린더 하이라이트
+      if (d.next_rebalance) {
+        NEXT_REBAL = d.next_rebalance;
+        const badge = $("#ddayBadge");
+        if (badge) {
+          const dd = d.d_day;
+          const md = d.next_rebalance.slice(5).replace("-", "/");
+          badge.textContent = (dd === 0 ? "오늘 리밸런싱" : "D-" + dd) + " · " + md;
+          badge.style.display = "inline-block";
+        }
+        renderCalendar();
+      }
     })
     .catch(() => toast("⚠️ 데이터 로드 실패"));
 
   fetch("/api/rebalance/history?token=" + TOKEN)
     .then(r => r.json())
     .then(d => {
-      renderReturnCurve(d.dates || [], d.return_curve || []);
-      $("#eqTs").textContent = "리밸런싱 " + (d.dates ? d.dates.length : 0) + "회";
+      renderReturnCurve(d.dates || [], d.return_curve || [], d.benchmark_curve || []);
+      const n = (d.dates ? d.dates.length : 0);
+      $("#eqTs").textContent = n ? n + "일 추이" : "데이터 없음";
+      REBAL_EXEC = new Set(d.exec_dates || []);
+      renderCalendar();
     })
     .catch(() => {});
 }

@@ -3,7 +3,7 @@ import csv
 import time
 from datetime import datetime
 
-from scanner.config import TRADE_HISTORY_FILE, STRATEGY
+from scanner.config import TRADE_HISTORY_FILE, STRATEGY, STRATEGY_MODE
 from scanner import state
 from scanner.notify import send_telegram, _esc, order_result_tag
 from scanner.positions import check_expired_positions, save_positions
@@ -98,10 +98,38 @@ def _update_post_expire_pnl(now: datetime) -> None:
             log.error(f"  EXPIRE 사후추적 기록 실패: {e}")
 
 
+def _heartbeat_rebalance(now: datetime) -> None:
+    """kr_gem 리밸런싱 모드: 일별 평가금액 스냅샷 + 경량 생존신호.
+    (눌림목 만료/TP/SL 매도 로직은 적용 안 함 — 월간 리밸런싱까지 보유 유지)"""
+    from scanner.config import _KIS_MODE
+    from scanner.job_rebalance import snapshot_equity
+    snap = snapshot_equity()
+    with state._auto_trade_lock:
+        do_trade = state._auto_trade_enabled
+    total = snap["total"] if snap else 0
+    equity = snap["equity"] if snap else 0
+    cash = snap["cash"] if snap else 0
+    send_telegram(
+        f"💚 *kr_gem 봇 정상 작동 중* ({now.strftime('%Y-%m-%d %H:%M')})\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💰 평가금액: {total:,}원 (주식 {equity:,} + 현금 {cash:,})\n"
+        f"🔑 KIS 모드: {'실전투자' if _KIS_MODE == 'real' else '모의투자'}\n"
+        f"{'🤖 자동 리밸런싱 ON' if do_trade else '📋 수동 모드'}\n"
+        f"📅 다음 리밸런싱: 매월 첫 거래일 09:05"
+    )
+    log.info(f"[{now.strftime('%H:%M')}] Heartbeat(rebalance) — 평가금액 {total:,}원 스냅샷")
+    if now.weekday() == 0:
+        send_weekly_report(now)
+
+
 def job_heartbeat() -> None:
     if is_market_closed(datetime.now(KST)):
         return
     now = datetime.now(KST)
+
+    if STRATEGY_MODE == "rebalance":
+        _heartbeat_rebalance(now)
+        return
 
     with state._auto_trade_lock:
         do_trade = state._auto_trade_enabled

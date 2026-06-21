@@ -12,6 +12,7 @@ POSITIONS_FILE     = os.path.join(_BASE_DIR, "positions.json")
 TRADE_HISTORY_FILE = os.path.join(_BASE_DIR, "trade_history.csv")
 SCREENING_LOG_FILE = os.path.join(_BASE_DIR, "screening_log.json")
 REBALANCE_LOG_FILE = os.path.join(_BASE_DIR, "rebalance_log.json")
+EQUITY_SNAPSHOT_FILE = os.path.join(_BASE_DIR, "equity_snapshots.json")
 
 TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
 _raw_ids          = os.getenv("TELEGRAM_CHAT_IDS") or os.getenv("TELEGRAM_CHAT_ID") or ""

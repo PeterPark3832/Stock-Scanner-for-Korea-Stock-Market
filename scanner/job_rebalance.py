@@ -7,7 +7,7 @@ from datetime import datetime
 from scanner.strategy_rebalance import compute_target_weights, RISK_ASSETS, SAFE_ASSET
 from scanner.kis import get_account_holdings, get_order_possible_cash, get_current_price, place_order
 from scanner.positions import load_positions, save_positions
-from scanner.config import REBALANCE_LOG_FILE
+from scanner.config import REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE
 from scanner.state import _POSITIONS_FLOCK
 from scanner.calendar import KST
 from scanner.notify import send_telegram
@@ -111,6 +111,30 @@ def execute_rebalance() -> dict:
     )
     log.info(f"[리밸런싱] {ok}/{len(results)} 주문 성공 (총자산 {plan['total_value']:,}원)")
     return {"plan": plan, "orders": results}
+
+
+def snapshot_equity() -> dict | None:
+    """오늘 kr_gem 포트폴리오 평가금액을 equity_snapshots.json에 기록 (하루 1건, 날짜 dedupe)."""
+    holdings, cash = _current_state()
+    total  = _total_value(holdings, cash)
+    equity = total - cash
+    today  = datetime.now(KST).strftime("%Y-%m-%d")
+    snap = {"date": today, "total": total, "equity": equity, "cash": cash}
+    with _POSITIONS_FLOCK:
+        try:
+            arr = []
+            if os.path.exists(EQUITY_SNAPSHOT_FILE):
+                with open(EQUITY_SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+                    arr = json.load(f)
+            arr = [s for s in arr if s.get("date") != today]  # 오늘분 교체
+            arr.append(snap)
+            arr.sort(key=lambda s: s["date"])
+            with open(EQUITY_SNAPSHOT_FILE, "w", encoding="utf-8") as f:
+                json.dump(arr, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.error(f"[스냅샷] 평가금액 기록 실패: {e}")
+            return None
+    return snap
 
 
 def _record_rebalance_log(plan: dict, results: list[dict]) -> None:

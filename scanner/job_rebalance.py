@@ -1,10 +1,14 @@
 """kr_gem 월간 리밸런싱 잡 — 목표비중 계산 → 실제 계좌 비교 → 매도/매수 실행."""
+import json
+import os
 import time
 from datetime import datetime
 
 from scanner.strategy_rebalance import compute_target_weights, RISK_ASSETS, SAFE_ASSET
 from scanner.kis import get_account_holdings, get_order_possible_cash, get_current_price, place_order
 from scanner.positions import load_positions, save_positions
+from scanner.config import REBALANCE_LOG_FILE
+from scanner.state import _POSITIONS_FLOCK
 from scanner.calendar import KST
 from scanner.notify import send_telegram
 from scanner.logger import log
@@ -62,24 +66,37 @@ def preview_rebalance() -> dict:
 
 
 def execute_rebalance() -> dict:
-    """실제 매도→매수 주문 실행 + positions.json 갱신 + 텔레그램 리포트."""
+    """실제 매도→매수 주문 실행 + positions.json 갱신 + 이력 기록 + 텔레그램 리포트."""
     plan  = preview_rebalance()
     sells = [r for r in plan["rows"] if r["diff_qty"] < 0]
     buys  = [r for r in plan["rows"] if r["diff_qty"] > 0]
 
+    # 매도 실현손익 계산용: 교체 전 kr_gem 포지션의 평단
+    old_entry = {p["ticker"]: p.get("entry", 0)
+                 for p in load_positions() if p.get("strategy") == "kr_gem"}
+
     results = []
     for r in sells:
         res = place_order(r["ticker"], "sell", -r["diff_qty"], r["name"])
-        results.append({"ticker": r["ticker"], "name": r["name"], "side": "sell", "qty": -r["diff_qty"], **res})
+        live  = get_current_price(r["ticker"])
+        price = live["current"] if live else (r["price"] or old_entry.get(r["ticker"], 0))
+        entry = old_entry.get(r["ticker"], 0)
+        pnl   = round((price - entry) / entry * 100, 2) if entry else None
+        results.append({"ticker": r["ticker"], "name": r["name"], "side": "sell",
+                        "qty": -r["diff_qty"], "price": price, "pnl_pct": pnl, **res})
 
     if sells:
         time.sleep(3)  # 매도 체결 대기 — 현금 확보 후 매수
 
     for r in buys:
         res = place_order(r["ticker"], "buy", r["diff_qty"], r["name"])
-        results.append({"ticker": r["ticker"], "name": r["name"], "side": "buy", "qty": r["diff_qty"], **res})
+        live  = get_current_price(r["ticker"])
+        price = live["current"] if live else r["price"]
+        results.append({"ticker": r["ticker"], "name": r["name"], "side": "buy",
+                        "qty": r["diff_qty"], "price": price, "pnl_pct": None, **res})
 
     _save_rebalance_positions(plan)
+    _record_rebalance_log(plan, results)
 
     ok = sum(1 for r in results if r["success"])
     lines = "\n".join(
@@ -94,6 +111,34 @@ def execute_rebalance() -> dict:
     )
     log.info(f"[리밸런싱] {ok}/{len(results)} 주문 성공 (총자산 {plan['total_value']:,}원)")
     return {"plan": plan, "orders": results}
+
+
+def _record_rebalance_log(plan: dict, results: list[dict]) -> None:
+    """리밸런싱 이벤트 1건을 rebalance_log.json에 append (성공 주문만 기록)."""
+    holdings = [{"ticker": r["ticker"], "name": r["name"], "weight": r["weight"],
+                 "qty": r["target_qty"], "value": int(r["target_qty"] * r["price"])}
+                for r in plan["rows"] if r["target_qty"] > 0]
+    orders = [{"ticker": r["ticker"], "name": r["name"], "side": r["side"],
+               "qty": r["qty"], "price": r.get("price", 0), "pnl_pct": r.get("pnl_pct")}
+              for r in results if r.get("success")]
+    event = {
+        "ts":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "total_value": plan["total_value"],
+        "cash":        plan["cash"],
+        "holdings":    holdings,
+        "orders":      orders,
+    }
+    with _POSITIONS_FLOCK:
+        try:
+            events = []
+            if os.path.exists(REBALANCE_LOG_FILE):
+                with open(REBALANCE_LOG_FILE, "r", encoding="utf-8") as f:
+                    events = json.load(f)
+            events.append(event)
+            with open(REBALANCE_LOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(events, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.error(f"[리밸런싱] 이력 기록 실패: {e}")
 
 
 def _save_rebalance_positions(plan: dict) -> None:

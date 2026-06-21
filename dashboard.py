@@ -97,6 +97,32 @@ def get_price(ticker: str) -> dict | None:
         pass
     return None
 
+def get_order_possible_cash() -> int | None:
+    token = get_kis_token()
+    if not token:
+        return None
+    acno = read_env("KIS_ACCOUNT_NO", "").replace("-", "").replace(" ", "")
+    if len(acno) < 10:
+        return None
+    cano, acnt = acno[:8], acno[8:10]
+    tr_id = "TTTC8908R" if read_env("KIS_MODE", "paper") == "real" else "VTTC8908R"
+    try:
+        r = requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/trading/inquire-psbl-order",
+            headers={"content-type": "application/json",
+                     "authorization": f"Bearer {token}",
+                     "appkey": read_env("KIS_APP_KEY"),
+                     "appsecret": read_env("KIS_APP_SECRET"),
+                     "tr_id": tr_id, "custtype": "P"},
+            params={"CANO": cano, "ACNT_PRDT_CD": acnt, "PDNO": "",
+                    "ORD_UNPR": "0", "ORD_DVSN": "01",
+                    "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N"}, timeout=5)
+        d = r.json()
+        if d.get("rt_cd") == "0":
+            return int(d["output"].get("ord_psbl_cash", 0))
+    except Exception:
+        pass
+    return None
+
 def send_telegram(text: str) -> None:
     token    = read_env("TELEGRAM_TOKEN")
     chat_ids = [c.strip() for c in read_env("TELEGRAM_CHAT_IDS").split(",") if c.strip()]
@@ -271,34 +297,7 @@ async def api_control(request: Request, token: str = ""):
         label = "ON" if value == "true" else "OFF"
         send_telegram(f"🖥️ *대시보드* — 자동매매 {label} 변경\n봇 재시작 중...")
         return JSONResponse({"ok": True, "msg": f"자동매매 {label} — 봇 재시작 중"})
-    if action in ("pause", "resume"):
-        open(os.path.join(BASE_DIR, f"_{action}.flag"), "w").close()
-        send_telegram({"pause": "🖥️ *대시보드* — 신호 발송 정지",
-                       "resume": "🖥️ *대시보드* — 신호 발송 재개"}[action])
-        return JSONResponse({"ok": True, "msg": f"{action} 명령 전달"})
     return JSONResponse({"ok": False, "msg": "알 수 없는 액션"}, status_code=400)
-
-@app.post("/api/set_trade_amount")
-async def api_set_trade_amount(request: Request, token: str = ""):
-    auth(token)
-    body = await request.json()
-    try:
-        amount = int(body.get("amount", 0))
-    except (TypeError, ValueError):
-        return JSONResponse({"ok": False, "msg": "금액은 숫자여야 합니다"}, status_code=400)
-    if amount < 100_000:
-        return JSONResponse({"ok": False, "msg": "최소 100,000원 이상 입력하세요"}, status_code=400)
-    if amount > 100_000_000:
-        return JSONResponse({"ok": False, "msg": "최대 1억원까지 설정 가능합니다"}, status_code=400)
-    old = int(read_env("TRADE_AMOUNT_PER_STOCK", "1000000"))
-    write_env("TRADE_AMOUNT_PER_STOCK", str(amount))
-    subprocess.Popen(["systemctl", "restart", "stock-scanner"],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    send_telegram(
-        f"🖥️ *대시보드* — 종목당 투자금액 변경\n"
-        f"{old:,}원 → {amount:,}원\n봇 재시작 중..."
-    )
-    return JSONResponse({"ok": True, "msg": f"종목당 {amount:,}원으로 변경 — 봇 재시작 중", "amount": amount})
 
 @app.post("/api/sell/{ticker}")
 async def api_sell(ticker: str, request: Request, token: str = ""):
@@ -327,6 +326,53 @@ async def api_sell(ticker: str, request: Request, token: str = ""):
                       f"주문번호: {result['order_no']} | PnL: {pnl:+.2f}%")
     return JSONResponse({"ok": True, "order_no": result["order_no"]})
 
+def _portfolio_snapshot() -> dict:
+    """현재 kr_gem 보유 평가 — 총평가금액·현금·보유종목·현재배분."""
+    positions = [p for p in load_positions() if p.get("strategy") == "kr_gem"]
+    holdings, equity = [], 0
+    for p in positions:
+        live  = get_price(p["ticker"])
+        price = live["current"] if live else p.get("entry", 0)
+        qty   = p.get("quantity", 0)
+        val   = price * qty
+        equity += val
+        holdings.append({"ticker": p["ticker"], "name": p.get("name", p["ticker"]),
+                         "qty": qty, "price": price, "value": val,
+                         "target_weight": p.get("target_weight", 0),
+                         "entry": p.get("entry", 0)})
+    cash  = get_order_possible_cash() or 0
+    total = equity + cash
+    for h in holdings:
+        h["current_weight"] = round(h["value"] / total * 100, 1) if total else 0
+    last_rebalance = max((p.get("entry_date", "") for p in positions), default="")
+    return {"holdings": holdings, "equity": equity, "cash": cash, "total": total,
+            "cash_weight": round(cash / total * 100, 1) if total else 0,
+            "count": len(holdings), "last_rebalance": last_rebalance}
+
+def _rebalance_events() -> list[dict]:
+    path = os.path.join(BASE_DIR, "rebalance_log.json")
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+@app.get("/api/portfolio")
+def api_portfolio(token: str = ""):
+    auth(token)
+    snap = _portfolio_snapshot()
+    events = _rebalance_events()
+    base = events[0]["total_value"] if events else (snap["total"] or 0)
+    ret = round((snap["total"] - base) / base * 100, 2) if base else 0.0
+    return JSONResponse({
+        "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "auto_trade":   read_env("AUTO_TRADE", "false").lower() == "true",
+        "kis_mode":     "실전투자" if read_env("KIS_MODE", "paper") == "real" else "모의투자",
+        **snap, "total_return": ret,
+    })
+
 @app.get("/api/rebalance")
 def api_rebalance(token: str = ""):
     auth(token)
@@ -335,19 +381,43 @@ def api_rebalance(token: str = ""):
         targets = compute_target_weights()
     except Exception as e:
         return JSONResponse({"ok": False, "msg": f"전략 계산 실패: {e}"}, status_code=500)
-    current = [p for p in load_positions() if p.get("strategy") == "kr_gem"]
-    current_by_ticker = {p["ticker"]: p for p in current}
+    snap = _portfolio_snapshot()
+    held = {h["ticker"]: h for h in snap["holdings"]}
     rows = []
+    target_tickers = set()
     for t in targets:
-        cur  = current_by_ticker.get(t["ticker"])
-        live = get_price(t["ticker"])
-        rows.append({
-            **t,
-            "current_qty":   cur["quantity"] if cur else 0,
-            "current_price": live["current"] if live else 0,
-        })
-    last_rebalance = max((p.get("entry_date", "") for p in current), default="")
-    return JSONResponse({"ok": True, "rows": rows, "last_rebalance": last_rebalance})
+        target_tickers.add(t["ticker"])
+        h = held.get(t["ticker"])
+        cur_qty   = h["qty"] if h else 0
+        cur_price = h["price"] if h else (get_price(t["ticker"]) or {}).get("current", 0)
+        cur_w     = h["current_weight"] if h else 0
+        tgt_qty   = int(snap["total"] * t["weight"] / 100 // t["price"]) if t["price"] else 0
+        rows.append({**t, "current_qty": cur_qty, "current_price": cur_price,
+                     "current_weight": cur_w, "target_qty": tgt_qty,
+                     "diff_qty": tgt_qty - cur_qty})
+    # 목표에서 빠졌지만 보유 중 → 전량 매도 표시
+    for tk, h in held.items():
+        if tk not in target_tickers:
+            rows.append({"ticker": tk, "name": h["name"], "weight": 0.0,
+                         "price": h["price"], "current_qty": h["qty"],
+                         "current_price": h["price"], "current_weight": h["current_weight"],
+                         "target_qty": 0, "diff_qty": -h["qty"]})
+    return JSONResponse({"ok": True, "rows": rows, "total_value": snap["total"],
+                         "cash": snap["cash"], "last_rebalance": snap["last_rebalance"]})
+
+@app.get("/api/rebalance/history")
+def api_rebalance_history(token: str = ""):
+    auth(token)
+    events = _rebalance_events()
+    dates, value_curve, return_curve = [], [], []
+    base = events[0]["total_value"] if events else 0
+    for e in events:
+        dates.append(e["ts"][5:16] if len(e.get("ts", "")) >= 16 else e.get("ts", ""))
+        tv = e.get("total_value", 0)
+        value_curve.append(tv)
+        return_curve.append(round((tv - base) / base * 100, 2) if base else 0.0)
+    return JSONResponse({"events": list(reversed(events)),
+                         "dates": dates, "value_curve": value_curve, "return_curve": return_curve})
 
 @app.post("/api/rebalance/execute")
 def api_rebalance_execute(token: str = ""):
@@ -355,45 +425,6 @@ def api_rebalance_execute(token: str = ""):
     open(os.path.join(BASE_DIR, "_rebalance_now.flag"), "w").close()
     send_telegram("🖥️ *대시보드* — 수동 리밸런싱 요청 전달\n실행 중인 봇이 곧 처리합니다")
     return JSONResponse({"ok": True, "msg": "리밸런싱 요청 전달 — 1분 내 처리됩니다"})
-
-@app.get("/api/backtest")
-def api_backtest(token: str = ""):
-    auth(token)
-    results = {}
-    for fname, label, kw in [("backtest_results.csv","v1","A_눌림목"),
-                               ("backtest_v2_results.csv","v2","A_눌림목v2")]:
-        path = os.path.join(BASE_DIR, fname)
-        if not os.path.exists(path):
-            continue
-        try:
-            with open(path, encoding="utf-8-sig") as f:
-                rows = [r for r in csv.DictReader(f) if kw in r.get("strategy","")]
-        except Exception:
-            continue
-        if not rows:
-            continue
-        wins = [r for r in rows if float(r["pnl_pct"]) > 0]
-        loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
-        gw   = sum(float(r["pnl_pct"]) for r in wins)
-        gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
-        cum, curve, dates = 0.0, [], []
-        for r in rows:
-            cum += float(r["pnl_pct"])
-            curve.append(round(cum, 2))
-            dates.append(r["exit_date"][5:] if r.get("exit_date") else "")
-        results[label] = dict(label=f"백테스트 {label} ({kw})", total=len(rows),
-            wins=len(wins), losses=len(loss),
-            win_rate=round(len(wins)/len(rows)*100,1) if rows else 0.0,
-            avg_win=round(gw/len(wins),2) if wins else 0.0,
-            avg_loss=round(-gl/len(loss),2) if loss else 0.0,
-            pf=round(gw/gl,2) if gl else 0.0,
-            cum_pct=round(sum(float(r["pnl_pct"]) for r in rows),2),
-            curve=curve, dates=dates)
-    hc = get_history_cached()
-    results["live"] = dict(label="실거래", **{k: hc["stats"].get(k,0) for k in
-        ["total","wins","losses","win_rate","avg_win","avg_loss","pf","cum_pct"]},
-        curve=hc["curve"], dates=hc["dates"])
-    return JSONResponse(results)
 
 @app.get("/api/logs")
 def api_logs(token: str = "", lines: int = 100):
@@ -408,41 +439,6 @@ def api_logs(token: str = "", lines: int = 100):
         return JSONResponse({"lines": recent})
     except Exception as e:
         return JSONResponse({"lines": [], "error": str(e)})
-
-
-@app.get("/api/screening-log")
-def api_screening_log(token: str = ""):
-    auth(token)
-    if not os.path.exists(SCREENING_LOG_FILE):
-        return JSONResponse([])
-    try:
-        with open(SCREENING_LOG_FILE, "r", encoding="utf-8") as f:
-            return JSONResponse(json.load(f))
-    except Exception as e:
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-@app.post("/api/position/{ticker}/update")
-async def api_position_update(ticker: str, request: Request, token: str = ""):
-    auth(token)
-    body   = await request.json()
-    new_tp = int(body.get("tp", 0))
-    new_sl = int(body.get("sl", 0))
-    if new_tp <= 0 or new_sl <= 0 or new_sl >= new_tp:
-        return JSONResponse({"ok": False, "msg": "TP > SL > 0 이어야 합니다"}, status_code=400)
-    positions = load_positions()
-    p = next((x for x in positions if x["ticker"] == ticker), None)
-    if not p:
-        return JSONResponse({"ok": False, "msg": "포지션 없음"}, status_code=404)
-    old_tp, old_sl = p["tp"], p["sl"]
-    p["tp"] = new_tp
-    p["sl"] = new_sl
-    save_positions(positions)
-    send_telegram(
-        f"🖥️ *대시보드 TP/SL 수정*\n{p['name']}({ticker})\n"
-        f"TP: {old_tp:,} → {new_tp:,}원\nSL: {old_sl:,} → {new_sl:,}원"
-    )
-    return JSONResponse({"ok": True, "msg": f"{p['name']} TP/SL 수정 완료"})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -703,33 +699,17 @@ section.active{display:block}
   .ctrl-group-action{border-left:none;border-top:1px solid var(--c-border)}
   .ctrl-strip .ctrl-divider{display:none}
   .chart-wrap{height:180px}
-  #tradeAmtInp{width:85px !important;padding:5px 7px !important;font-size:12px !important}
   .btn-sm{padding:4px 8px;font-size:11.5px}
-  .ring-card{padding:10px 4px}
-  .ring-label{font-size:10px;margin-bottom:6px}
-  .ring-canvas-wrap{width:56px;height:56px}
-  .ring-pct{font-size:13px}
   .kpi-sub{white-space:normal;overflow:visible;text-overflow:unset;font-size:10.5px}
   .kpi-value{font-size:20px}
   .date-short{display:inline}
   .date-full{display:none}
   .tbl-name{max-width:100px}
-  /* 이력 테이블: 진입가(5), 청산가(6), 구분(7) 숨김 — 종목·청산일·사유·PnL만 표시 */
-  #sec-history thead th:nth-child(5),
-  #sec-history thead th:nth-child(6),
-  #sec-history thead th:nth-child(7),
-  #histTbody td:nth-child(5),
-  #histTbody td:nth-child(6),
-  #histTbody td:nth-child(7){display:none}
-  /* 포지션 테이블: 진입가(2)·TP/SL(4)·신호점수(7)·구분(8) 숨김 — 종목·현재가·진행·PnL·액션만 표시 */
-  #sec-positions thead th:nth-child(2),
-  #sec-positions thead th:nth-child(4),
-  #sec-positions thead th:nth-child(7),
-  #sec-positions thead th:nth-child(8),
-  #posTbody td:nth-child(2),
-  #posTbody td:nth-child(4),
-  #posTbody td:nth-child(7),
-  #posTbody td:nth-child(8){display:none}
+  /* 리밸런싱 테이블: 현재 비중(3)·현재가(4) 숨김 — 종목·목표비중·보유수량·필요매매만 표시 */
+  #sec-rebalance thead th:nth-child(3),
+  #sec-rebalance thead th:nth-child(4),
+  #rebalTbody td:nth-child(3),
+  #rebalTbody td:nth-child(4){display:none}
   /* td 텍스트 줄바꿈 허용 + 패딩 축소 */
   td{white-space:normal;padding:9px 8px;font-size:12px}
   thead th{padding:8px 8px;font-size:10.5px}
@@ -747,7 +727,7 @@ section.active{display:block}
     </div>
     <div>
       <div class="sb-logo-text">Scanner v5.1</div>
-      <div class="sb-logo-sub">눌림목 스윙 봇</div>
+      <div class="sb-logo-sub">kr_gem 멀티에셋</div>
     </div>
   </div>
 
@@ -757,21 +737,13 @@ section.active{display:block}
       <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4Zm9 0a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V4Zm0 9a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3ZM2 13a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-3Z"/></svg>
       <span>개요</span>
     </a></li>
-    <li><a href="#" data-sec="positions" onclick="showSection('positions');return false">
-      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.414A2 2 0 0 0 15.414 6L12 2.586A2 2 0 0 0 10.586 2H6Zm2 7a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm1 3a1 1 0 1 0 0 2h2a1 1 0 1 0 0-2H9Z" clip-rule="evenodd"/></svg>
-      <span>보유 포지션</span>
-    </a></li>
     <li><a href="#" data-sec="rebalance" onclick="showSection('rebalance');return false">
       <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 0 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
       <span>리밸런싱</span>
     </a></li>
     <li><a href="#" data-sec="history" onclick="showSection('history');return false">
       <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
-      <span>거래 이력</span>
-    </a></li>
-    <li><a href="#" data-sec="backtest" onclick="showSection('backtest');return false">
-      <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-5Zm6-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V7Zm6-3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V4Z"/></svg>
-      <span>백테스트</span>
+      <span>리밸런싱 내역</span>
     </a></li>
     <li><a href="#" data-sec="logs" onclick="showSection('logs');return false">
       <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Zm3.293 1.293a1 1 0 0 1 1.414 0l3 3a1 1 0 0 1 0 1.414l-3 3a1 1 0 0 1-1.414-1.414L7.586 10 5.293 7.707a1 1 0 0 1 0-1.414ZM11 12a1 1 0 1 0 0 2h3a1 1 0 1 0 0-2h-3Z" clip-rule="evenodd"/></svg>
@@ -807,15 +779,6 @@ section.active{display:block}
     <div class="ctrl-spacer"></div>
     <span id="kisModeBadge" class="badge badge-blue"></span>
   </div>
-  <!-- 액션 영역 -->
-  <div class="ctrl-group ctrl-group-action">
-    <button class="btn btn-outline btn-sm" onclick="sendPause()"><svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path d="M5.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75A.75.75 0 0 0 7.25 3h-1.5ZM12.75 3a.75.75 0 0 0-.75.75v12.5c0 .414.336.75.75.75h1.5a.75.75 0 0 0 .75-.75V3.75a.75.75 0 0 0-.75-.75h-1.5Z"/></svg>정지</button>
-    <button class="btn btn-outline btn-sm" onclick="sendResume()"><svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path d="M6.3 2.84A1.5 1.5 0 0 0 4 4.11v11.78a1.5 1.5 0 0 0 2.3 1.27l9.344-5.891a1.5 1.5 0 0 0 0-2.538L6.3 2.84Z"/></svg>재개</button>
-    <div class="ctrl-divider"></div>
-    <span style="color:var(--c-text2)">종목당</span>
-    <input type="number" id="tradeAmtInp" class="form-input" style="width:100px;padding:6px 10px;font-size:13px" placeholder="투자금액">
-    <button class="btn btn-primary btn-sm" onclick="setTradeAmt()">설정</button>
-  </div>
 </div>
 
 <!-- ── Overview ── -->
@@ -824,24 +787,24 @@ section.active{display:block}
   <!-- KPI -->
   <div class="kpi-grid">
     <div class="kpi-card">
-      <div class="kpi-label">총 거래</div>
+      <div class="kpi-label">총 평가금액</div>
       <div class="kpi-value neutral" id="kpiTotal">--</div>
-      <div class="kpi-sub">승 <span id="kpiWins">-</span> / 패 <span id="kpiLoss">-</span></div>
+      <div class="kpi-sub">주식 <span id="kpiEquity">--</span> + 현금 <span id="kpiCash">--</span></div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">승률</div>
-      <div class="kpi-value" id="kpiWR">--%</div>
-      <div class="kpi-sub">손익분기 <span id="kpiBE">--</span>% 이상 필요</div>
+      <div class="kpi-label">누적 수익률</div>
+      <div class="kpi-value" id="kpiRet">--%</div>
+      <div class="kpi-sub">최초 리밸런싱 대비 <span id="kpiRetArrow" style="font-size:14px"></span></div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">기대 손익 / 건</div>
-      <div class="kpi-value" id="kpiAvg">--%</div>
-      <div class="kpi-sub">익 <span id="kpiAW">--</span>% / 손 <span id="kpiAL">--</span>%</div>
+      <div class="kpi-label">보유 종목 수</div>
+      <div class="kpi-value neutral" id="kpiCount">--</div>
+      <div class="kpi-sub">목표 3종목 분산</div>
     </div>
     <div class="kpi-card">
-      <div class="kpi-label">Profit Factor</div>
-      <div class="kpi-value" id="kpiPF">--</div>
-      <div class="kpi-sub">누적 PnL <span id="kpiCum">--</span>% <span id="kpiCumArrow" style="font-size:14px"></span></div>
+      <div class="kpi-label">현금 비중</div>
+      <div class="kpi-value neutral" id="kpiCashW">--%</div>
+      <div class="kpi-sub">주문가능 현금 기준</div>
     </div>
   </div>
 
@@ -853,7 +816,7 @@ section.active{display:block}
           <svg viewBox="0 0 26 26"><circle cx="13" cy="9" r="5"/><path d="M4 22c0-4.418 4.03-8 9-8s9 3.582 9 8"/></svg>
         </div>
         <div>
-          <div class="bot-name">눌림목 봇</div>
+          <div class="bot-name">kr_gem 리밸런싱 봇</div>
           <div class="bot-role" id="botRoleLabel">시스템 연결 중...</div>
         </div>
       </div>
@@ -868,78 +831,42 @@ section.active{display:block}
         </div>
         <div class="bot-stat">
           <div class="bot-stat-label">보유</div>
-          <div class="bot-stat-value" id="botHolding">-- / 5</div>
-        </div>
-        <div class="bot-stat">
-          <div class="bot-stat-label">예산</div>
-          <div class="bot-stat-value" id="botTradeAmt">--</div>
+          <div class="bot-stat-value" id="botHolding">--</div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <div class="card-title">이달 스캔 일정</div>
+      <div class="card-title">이달 리밸런싱 일정</div>
       <div id="miniCal"></div>
       <div class="schedule-list">
-        <div class="schedule-item"><span class="schedule-time">10:00</span><span class="schedule-desc">포지션 모니터링 (오전)</span></div>
-        <div class="schedule-item"><span class="schedule-time">11:30</span><span class="schedule-desc">포지션 모니터링</span></div>
-        <div class="schedule-item"><span class="schedule-time">13:00</span><span class="schedule-desc">포지션 모니터링 (오후)</span></div>
-        <div class="schedule-item"><span class="schedule-time">14:30</span><span class="schedule-desc">1차 스크리닝 — 기준봉 탐색</span></div>
-        <div class="schedule-item"><span class="schedule-time">15:20</span><span class="schedule-desc">2차 확인 + 자동매매 주문 실행</span></div>
+        <div class="schedule-item"><span class="schedule-time">매월 1일</span><span class="schedule-desc">첫 거래일 09:05 자동 리밸런싱</span></div>
+        <div class="schedule-item"><span class="schedule-time">수시</span><span class="schedule-desc">대시보드 '리밸런싱' 탭에서 수동 실행</span></div>
+        <div class="schedule-item"><span class="schedule-time">09:00</span><span class="schedule-desc">Heartbeat — 봇 생존 확인</span></div>
       </div>
     </div>
   </div>
 
-  <!-- Exit reason bar chart -->
+  <!-- Current allocation bar chart -->
   <div class="card" style="margin-bottom:20px">
-    <div class="card-title">청산 사유별 분포 <span id="reasonTotal"></span></div>
-    <div class="reason-bar-list" id="ringRow">
+    <div class="card-title">현재 자산 배분 <span id="allocTotal"></span></div>
+    <div class="reason-bar-list" id="allocRow">
       <div style="color:var(--c-text2);font-size:13px;padding:8px 0">데이터 로딩 중...</div>
     </div>
   </div>
 
-  <!-- Equity curve -->
-  <div class="card" style="margin-bottom:20px">
+  <!-- Return curve -->
+  <div class="card">
     <div class="section-hd">
       <div>
-        <div class="section-title">누적 손익 곡선</div>
-        <div class="section-sub">실거래 누적 PnL (%)</div>
+        <div class="section-title">포트폴리오 누적 수익률</div>
+        <div class="section-sub">리밸런싱 시점별 평가금액 기준 (%)</div>
       </div>
       <span class="refresh-ts" id="eqTs"></span>
     </div>
     <div class="chart-wrap"><canvas id="equityChart"></canvas></div>
   </div>
 
-  <!-- Filter breakdown -->
-  <div class="card">
-    <div class="card-title">필터별 탈락 현황 <span id="filterTs"></span></div>
-    <div id="filterBars"><div style="color:var(--c-text2);font-size:13px;padding:8px 0">14:30 스크리닝 이후 데이터가 표시됩니다</div></div>
-  </div>
-
-</section>
-
-<!-- ── Positions ── -->
-<section id="sec-positions">
-  <div class="section-hd">
-    <div>
-      <div class="section-title">보유 포지션</div>
-      <div class="section-sub" id="posTs"></div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr>
-          <th>종목</th><th>진입가</th><th>현재가</th>
-          <th>TP / SL</th><th>진행</th><th>PnL</th>
-          <th>신호점수</th><th>구분</th><th>액션</th>
-        </tr></thead>
-        <tbody id="posTbody">
-          <tr><td colspan="9" style="text-align:center;color:var(--c-text2);padding:40px">보유 포지션 없음</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
 </section>
 
 <!-- ── Rebalance ── -->
@@ -951,57 +878,41 @@ section.active{display:block}
     </div>
     <button class="btn btn-primary btn-sm" onclick="confirmRebalance()">지금 리밸런싱 실행</button>
   </div>
+  <div class="kpi-grid" style="margin-bottom:16px">
+    <div class="kpi-card"><div class="kpi-label">총 평가금액</div><div class="kpi-value neutral" id="rbTotal">--</div></div>
+    <div class="kpi-card"><div class="kpi-label">주문가능 현금</div><div class="kpi-value neutral" id="rbCash">--</div></div>
+  </div>
   <div class="card">
     <div class="tbl-wrap">
       <table>
         <thead><tr>
-          <th>종목</th><th>목표 비중</th><th>현재가</th><th>보유 수량</th>
+          <th>종목</th><th>목표 비중</th><th>현재 비중</th><th>현재가</th><th>보유 수량</th><th>필요 매매</th>
         </tr></thead>
         <tbody id="rebalTbody">
-          <tr><td colspan="4" style="text-align:center;color:var(--c-text2);padding:40px">로딩 중...</td></tr>
+          <tr><td colspan="6" style="text-align:center;color:var(--c-text2);padding:40px">로딩 중...</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 </section>
 
-<!-- ── History ── -->
+<!-- ── Rebalance history ── -->
 <section id="sec-history">
   <div class="section-hd">
     <div>
-      <div class="section-title">거래 이력</div>
-      <div class="section-sub">최근 20건</div>
+      <div class="section-title">리밸런싱 내역</div>
+      <div class="section-sub">실행된 리밸런싱 이벤트별 매매 내역</div>
     </div>
   </div>
-  <div class="card">
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr>
-          <th>종목</th><th>청산일</th><th>청산 사유</th>
-          <th>PnL</th><th>진입가</th><th>청산가</th><th>구분</th>
-        </tr></thead>
-        <tbody id="histTbody">
+  <div id="rbHistList">
+    <div class="card"><div style="color:var(--c-text2);font-size:13px;padding:8px 0">리밸런싱 실행 이력이 없습니다</div></div>
+  </div>
+  <div style="display:none">
+    <table><tbody id="histTbody">
           <tr><td colspan="7" style="text-align:center;color:var(--c-text2);padding:40px">이력 없음</td></tr>
         </tbody>
       </table>
     </div>
-  </div>
-</section>
-
-<!-- ── Backtest ── -->
-<section id="sec-backtest">
-  <div class="section-hd">
-    <div class="section-title">백테스트 비교</div>
-    <div class="bt-tabs">
-      <button class="bt-tab active" onclick="btSwitch(this,'live')">실거래</button>
-      <button class="bt-tab" onclick="btSwitch(this,'v1')">v1</button>
-      <button class="bt-tab" onclick="btSwitch(this,'v2')">v2</button>
-    </div>
-  </div>
-  <div class="kpi-grid" id="btKpi" style="margin-bottom:16px"></div>
-  <div class="card">
-    <div class="card-title">누적 손익 곡선</div>
-    <div class="chart-wrap"><canvas id="btChart"></canvas></div>
   </div>
 </section>
 
@@ -1031,21 +942,13 @@ section.active{display:block}
     <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 4a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4Zm9 0a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2V4Zm0 9a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-3a2 2 0 0 1-2-2v-3ZM2 13a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-3Z"/></svg>
     개요
   </button>
-  <button class="mnav-btn" onclick="showSection('positions');mnavSet(this)">
-    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.414A2 2 0 0 0 15.414 6L12 2.586A2 2 0 0 0 10.586 2H6Z" clip-rule="evenodd"/></svg>
-    포지션
-  </button>
   <button class="mnav-btn" onclick="showSection('rebalance');mnavSet(this)">
     <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 0 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
     리밸런싱
   </button>
   <button class="mnav-btn" onclick="showSection('history');mnavSet(this)">
     <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
-    이력
-  </button>
-  <button class="mnav-btn" onclick="showSection('backtest');mnavSet(this)">
-    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-5Zm6-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1V7Zm6-3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V4Z"/></svg>
-    백테스트
+    내역
   </button>
   <button class="mnav-btn" onclick="showSection('logs');mnavSet(this)">
     <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M2 5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5Z" clip-rule="evenodd"/></svg>
@@ -1073,29 +976,6 @@ section.active{display:block}
   </div>
 </div>
 
-<!-- Edit Modal -->
-<div class="modal-bg" id="editModal">
-  <div class="modal">
-    <h3 style="display:flex;align-items:center;gap:8px"><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m13.586 3.586 2.828 2.828-9.9 9.9H3.686V13.5l9.9-9.914ZM11.5 5.5l3 3"/></svg>TP / SL 수정</h3>
-    <div class="form-group">
-      <label class="form-label">종목</label>
-      <input type="text" id="editName" class="form-input" readonly>
-    </div>
-    <div class="form-group">
-      <label class="form-label">익절가 (TP)</label>
-      <input type="number" id="editTp" class="form-input">
-    </div>
-    <div class="form-group">
-      <label class="form-label">손절가 (SL)</label>
-      <input type="number" id="editSl" class="form-input">
-    </div>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="btn btn-primary" style="flex:1" onclick="confirmEdit()">저장</button>
-      <button class="btn btn-outline" style="flex:1" onclick="closeModal('editModal')">취소</button>
-    </div>
-  </div>
-</div>
-
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1111,23 +991,32 @@ function showSection(sec) {
   if (el) el.classList.add("active");
   $$(".sb-nav li a").forEach(a => a.classList.toggle("active", a.dataset.sec === sec));
   if (sec === "logs") loadLogs();
-  if (sec === "backtest") loadBacktest();
   if (sec === "rebalance") loadRebalance();
+  if (sec === "history") loadRebalanceHistory();
 }
 
 // ── Rebalance ──────────────────────────────────────────────────
+const won = v => (v || 0).toLocaleString() + "원";
 function loadRebalance() {
   fetch("/api/rebalance?token=" + TOKEN).then(r => r.json()).then(d => {
-    if (!d.ok) { toast("❌ " + d.msg); return; }
+    if (!d.ok) { toast("❌ " + d.msg); $("#rebalTbody").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-text2);padding:40px">목표 비중 계산 실패 — 잠시 후 다시 시도하세요</td></tr>`; return; }
     $("#rebalTs").textContent = "마지막 리밸런싱: " + (d.last_rebalance || "없음");
-    $("#rebalTbody").innerHTML = d.rows.length ? d.rows.map(row => `
-      <tr>
-        <td>${row.name} <span style="color:var(--c-text2);font-size:11px">(${row.ticker})</span></td>
-        <td>${row.weight.toFixed(1)}%</td>
-        <td>${row.price.toLocaleString()}원</td>
-        <td>${row.current_qty}주</td>
-      </tr>
-    `).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--c-text2);padding:40px">목표 비중 계산 실패 — 잠시 후 다시 시도하세요</td></tr>`;
+    $("#rbTotal").textContent = won(d.total_value);
+    $("#rbCash").textContent  = won(d.cash);
+    $("#rebalTbody").innerHTML = d.rows.length ? d.rows.map(row => {
+      const diff = row.diff_qty || 0;
+      const diffStr = diff === 0 ? '<span style="color:var(--c-text2)">유지</span>'
+        : diff > 0 ? `<span style="color:#16a34a;font-weight:600">+${diff} 매수</span>`
+        : `<span style="color:#dc2626;font-weight:600">${diff} 매도</span>`;
+      return `<tr>
+        <td><div style="font-weight:600">${row.name}</div><div style="font-size:11px;color:var(--c-text2)">${row.ticker}</div></td>
+        <td><b>${(row.weight||0).toFixed(1)}%</b></td>
+        <td>${(row.current_weight||0).toFixed(1)}%</td>
+        <td>${(row.current_price||row.price||0).toLocaleString()}</td>
+        <td>${row.current_qty||0}주</td>
+        <td>${diffStr}</td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="6" style="text-align:center;color:var(--c-text2);padding:40px">목표 종목 없음</td></tr>`;
   }).catch(() => toast("❌ 리밸런싱 데이터 조회 실패"));
 }
 function confirmRebalance() {
@@ -1135,6 +1024,32 @@ function confirmRebalance() {
   fetch("/api/rebalance/execute?token=" + TOKEN, {method: "POST"}).then(r => r.json()).then(d => {
     toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg);
   }).catch(() => toast("❌ 리밸런싱 요청 실패"));
+}
+function loadRebalanceHistory() {
+  fetch("/api/rebalance/history?token=" + TOKEN).then(r => r.json()).then(d => {
+    const box = $("#rbHistList");
+    if (!d.events || !d.events.length) {
+      box.innerHTML = `<div class="card"><div style="color:var(--c-text2);font-size:13px;padding:8px 0">리밸런싱 실행 이력이 없습니다</div></div>`;
+      return;
+    }
+    box.innerHTML = d.events.map(ev => {
+      const orders = (ev.orders||[]).map(o => {
+        const buy = o.side === "buy";
+        const badge = buy ? '<span class="badge badge-green" style="font-size:10px">매수</span>'
+                          : '<span class="badge badge-red" style="font-size:10px">매도</span>';
+        const pnl = (!buy && o.pnl_pct != null)
+          ? ` <span style="${o.pnl_pct>=0?'color:#16a34a':'color:#dc2626'};font-size:11px">(${o.pnl_pct>=0?'+':''}${o.pnl_pct}%)</span>` : "";
+        return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">
+          ${badge}<span style="flex:1">${o.name} <span style="color:var(--c-text2);font-size:11px">${o.ticker}</span></span>
+          <span>${o.qty}주 @ ${(o.price||0).toLocaleString()}${pnl}</span></div>`;
+      }).join("") || '<div style="color:var(--c-text2);font-size:12px;padding:4px 0">주문 변경 없음</div>';
+      return `<div class="card" style="margin-bottom:14px">
+        <div class="section-hd" style="margin-bottom:10px">
+          <div class="card-title">${ev.ts}</div>
+          <span style="font-size:12px;color:var(--c-text2)">평가금액 ${won(ev.total_value)}</span>
+        </div>${orders}</div>`;
+    }).join("");
+  }).catch(() => {});
 }
 function mnavSet(btn) {
   $$(".mnav-btn").forEach(b => b.classList.remove("active"));
@@ -1169,28 +1084,8 @@ function confirmSell() {
   }).then(r => r.json()).then(d => {
     toast(d.ok ? "✅ 청산 완료 — 주문번호: " + d.order_no : "❌ " + d.msg);
     closeModal("sellModal");
-    if (d.ok) setTimeout(loadData, 1500);
+    if (d.ok) setTimeout(loadPortfolio, 1500);
   }).catch(() => toast("❌ 청산 요청 실패"));
-}
-
-function openEdit(ticker, name, tp, sl) {
-  _editTicker = ticker;
-  $("#editName").value = name + " (" + ticker + ")";
-  $("#editTp").value = tp;
-  $("#editSl").value = sl;
-  $("#editModal").classList.add("open");
-}
-function confirmEdit() {
-  const tp = parseInt($("#editTp").value), sl = parseInt($("#editSl").value);
-  if (!tp || !sl || sl >= tp) { toast("TP > SL 이어야 합니다"); return; }
-  fetch("/api/position/" + _editTicker + "/update?token=" + TOKEN, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({tp, sl})
-  }).then(r => r.json()).then(d => {
-    toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg);
-    closeModal("editModal");
-    if (d.ok) setTimeout(loadData, 1000);
-  }).catch(() => toast("❌ 수정 요청 실패"));
 }
 
 // ── Controls ───────────────────────────────────────────────────
@@ -1200,26 +1095,6 @@ function toggleAutoTrade(on) {
     body: JSON.stringify({action: on ? "autotrade_on" : "autotrade_off"})
   }).then(r => r.json()).then(d => toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg))
     .catch(() => toast("❌ 요청 실패"));
-}
-function sendPause() {
-  fetch("/api/control?token=" + TOKEN, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({action: "pause"})
-  }).then(r => r.json()).then(d => toast(d.ok ? "⏸ " + d.msg : "❌ " + d.msg));
-}
-function sendResume() {
-  fetch("/api/control?token=" + TOKEN, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({action: "resume"})
-  }).then(r => r.json()).then(d => toast(d.ok ? "▶ " + d.msg : "❌ " + d.msg));
-}
-function setTradeAmt() {
-  const v = parseInt($("#tradeAmtInp").value);
-  if (!v || v < 100000) { toast("최소 100,000원 이상"); return; }
-  fetch("/api/set_trade_amount?token=" + TOKEN, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({amount: v})
-  }).then(r => r.json()).then(d => toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg));
 }
 
 // ── Mini calendar ──────────────────────────────────────────────
@@ -1250,60 +1125,45 @@ function renderCalendar() {
   $("#miniCal").innerHTML = h;
 }
 
-// ── Reason bar chart ───────────────────────────────────────────
-const REASON_META = {
-  TP:          {label:"TP 익절",    color:"#10B981"},
-  TP1:         {label:"TP1 분할",   color:"#22c55e"},
-  SL:          {label:"SL 손절",    color:"#EF4444"},
-  HARD_SL:     {label:"하드 SL",   color:"#dc2626"},
-  TRAIL_SL:    {label:"트레일 SL", color:"#F59E0B"},
-  EXPIRE:      {label:"만료",       color:"#94a3b8"},
-  MANUAL_SELL: {label:"수동 청산", color:"#3B82F6"},
-};
-
-function renderRings(reasons) {
-  const total = Object.values(reasons).reduce((a, b) => a + b, 0);
-  $("#reasonTotal").textContent = total ? `전체 ${total}건` : "";
-  const row = $("#ringRow");
-  row.innerHTML = "";
-  // Sort by count descending
-  const sorted = Object.entries(REASON_META).sort(([a], [b]) => (reasons[b]||0) - (reasons[a]||0));
-  sorted.forEach(([k, meta]) => {
-    const cnt = reasons[k] || 0;
-    const pct = total ? Math.round(cnt / total * 100) : 0;
-    const row2 = document.createElement("div");
-    row2.className = "reason-bar-row";
-    row2.innerHTML = `
-      <div class="reason-bar-label">${meta.label}</div>
+// ── Allocation bar chart ───────────────────────────────────────
+const ALLOC_COLORS = ["#10B981","#3B82F6","#F59E0B","#8B5CF6","#EC4899","#14B8A6"];
+function renderAllocation(holdings, cashWeight) {
+  const row = $("#allocRow");
+  const items = (holdings || []).map(h => ({label: h.name, pct: h.current_weight || 0}));
+  if (cashWeight > 0) items.push({label: "현금", pct: cashWeight});
+  $("#allocTotal").textContent = items.length ? `${items.length}개 자산` : "";
+  if (!items.length) {
+    row.innerHTML = '<div style="color:var(--c-text2);font-size:13px;padding:8px 0">보유 자산 없음 — 리밸런싱 실행 전</div>';
+    return;
+  }
+  items.sort((a, b) => b.pct - a.pct);
+  row.innerHTML = items.map((it, i) => `
+    <div class="reason-bar-row">
+      <div class="reason-bar-label">${it.label}</div>
       <div class="reason-bar-track">
-        <div class="reason-bar-fill" style="width:${pct}%;background:${meta.color}"></div>
+        <div class="reason-bar-fill" style="width:${Math.min(100,it.pct)}%;background:${it.label==='현금'?'#94a3b8':ALLOC_COLORS[i%ALLOC_COLORS.length]}"></div>
       </div>
-      <div class="reason-bar-meta"><span class="reason-bar-pct">${pct}%</span> <span style="color:var(--c-text2)">${cnt}건</span></div>`;
-    row.appendChild(row2);
-  });
-  if (!total) row.innerHTML = '<div style="color:var(--c-text2);font-size:13px;padding:8px 0">거래 데이터 없음</div>';
+      <div class="reason-bar-meta"><span class="reason-bar-pct">${it.pct.toFixed(1)}%</span></div>
+    </div>`).join("");
 }
 
-// ── Equity chart ───────────────────────────────────────────────
+// ── Return curve ───────────────────────────────────────────────
 let equityChart = null;
-function renderEquity(dates, curve) {
+function renderReturnCurve(dates, curve) {
   const canvas = $("#equityChart");
   const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
-
-  // Canvas gradient fill: top opacity → transparent
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200);
   grad.addColorStop(0, "rgba(16,185,129,.18)");
   grad.addColorStop(1, "rgba(16,185,129,0)");
-
   equityChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: dates,
       datasets: [{
-        label: "누적 PnL (%)", data: curve,
+        label: "누적 수익률 (%)", data: curve,
         borderColor: "#10B981", backgroundColor: grad,
-        fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2.5
+        fill: true, tension: 0.3, pointRadius: dates.length <= 12 ? 3 : 0, borderWidth: 2.5
       }]
     },
     options: {
@@ -1311,11 +1171,7 @@ function renderEquity(dates, curve) {
       interaction: {mode: "index", intersect: false},
       plugins: {
         legend: {display: false},
-        tooltip: {
-          callbacks: {
-            label: item => " " + (item.raw >= 0 ? "+" : "") + item.raw.toFixed(2) + "%"
-          }
-        }
+        tooltip: {callbacks: {label: item => " " + (item.raw >= 0 ? "+" : "") + item.raw.toFixed(2) + "%"}}
       },
       scales: {
         x: {ticks: {maxTicksLimit: 8, font: {size: 11}, color: "#94a3b8"}, grid: {display: false}},
@@ -1331,143 +1187,9 @@ function renderEquity(dates, curve) {
   });
 }
 
-// ── KPI ────────────────────────────────────────────────────────
-function renderKpi(stats) {
-  const {total=0, wins=0, losses=0, win_rate=0, avg_win=0, avg_loss=0, pf=0, cum_pct=0} = stats;
-  $("#kpiTotal").textContent = total;
-  $("#kpiWins").textContent = wins;
-  $("#kpiLoss").textContent = losses;
-  const wrEl = $("#kpiWR");
-  wrEl.textContent = win_rate.toFixed(1) + "%";
-  wrEl.className = "kpi-value " + (win_rate >= 40 ? "green" : "red");
-  const avgL = Math.abs(avg_loss);
-  const be = avgL && avg_win ? (avgL / (avg_win + avgL) * 100).toFixed(0) : "--";
-  $("#kpiBE").textContent = be;
-  const ev = total ? ((avg_win * wins + avg_loss * losses) / total) : 0;
-  const avgEl = $("#kpiAvg");
-  avgEl.textContent = (ev >= 0 ? "+" : "") + ev.toFixed(2) + "%";
-  avgEl.className = "kpi-value " + (ev >= 0 ? "green" : "red");
-  $("#kpiAW").textContent = "+" + avg_win.toFixed(2) + "%";
-  $("#kpiAL").textContent = avg_loss.toFixed(2) + "%";
-  const pfEl = $("#kpiPF");
-  pfEl.textContent = pf.toFixed(2);
-  pfEl.className = "kpi-value " + (pf >= 1 ? "green" : "red");
-  $("#kpiCum").textContent = (cum_pct >= 0 ? "+" : "") + cum_pct.toFixed(1);
-  const arrow = $("#kpiCumArrow");
-  if (arrow) { arrow.textContent = cum_pct >= 0 ? "↑" : "↓"; arrow.style.color = cum_pct >= 0 ? "#059669" : "#DC2626"; }
-}
-
-// ── Positions table ────────────────────────────────────────────
-const REASON_BADGE = {
-  TP:"badge-green", TP1:"badge-green", SL:"badge-red",
-  HARD_SL:"badge-red", TRAIL_SL:"badge-yellow",
-  EXPIRE:"badge-gray", MANUAL_SELL:"badge-blue"
-};
-function reasonBadge(r) {
-  const label = (REASON_META[r] || {label:r}).label;
-  return `<span class="badge ${REASON_BADGE[r]||"badge-gray"}">${label}</span>`;
-}
-
-function renderPositions(positions) {
-  const tb = $("#posTbody");
-  if (!positions || !positions.length) {
-    tb.innerHTML = `<tr><td colspan="9" style="text-align:center;color:var(--c-text2);padding:40px">보유 포지션 없음</td></tr>`;
-    $("#botHolding").textContent = "0 / 5";
-    return;
-  }
-  $("#botHolding").textContent = positions.length + " / 5";
-  tb.innerHTML = positions.map(p => {
-    const pnl = p.pnl_pct;
-    const pnlStr = pnl !== null ? (pnl >= 0 ? "+" : "") + pnl.toFixed(2) + "%" : "--";
-    const pnlSt = pnl === null ? "" : pnl >= 0 ? "color:#16a34a;font-weight:600" : "color:#dc2626;font-weight:600";
-    const prog = p.progress || 50;
-    const pfill = prog < 20 ? "danger" : prog < 40 ? "warn" : "";
-    const trailing = p.is_trailing ? ` <span class="badge badge-yellow" style="font-size:10px">TRAIL</span>` : "";
-    const auto = p.auto_traded ? `<span class="badge badge-blue" style="font-size:10px">자동</span>` : `<span class="badge badge-gray" style="font-size:10px">수동</span>`;
-    const score = p.signal_score !== undefined && p.signal_score !== null ? p.signal_score + "점" : "--";
-    const nm = (p.name || "").replace(/'/g, "\\'");
-    return `<tr>
-      <td>
-        <div style="font-weight:600">${p.name||"--"}</div>
-        <div style="font-size:11px;color:var(--c-text2)">${p.ticker}</div>
-      </td>
-      <td>${(p.entry||0).toLocaleString()}</td>
-      <td>
-        ${p.current ? p.current.toLocaleString() : "--"}
-        ${!p.live_ok ? `<span style="font-size:10px;color:var(--c-warn)" title="시세 조회 실패">⚠</span>` : ""}
-      </td>
-      <td>
-        <div style="font-size:12px">TP <b>${(p.tp||0).toLocaleString()}</b></div>
-        <div style="font-size:12px">SL ${(p.sl||0).toLocaleString()}${trailing}</div>
-      </td>
-      <td>
-        <div class="prog-bar"><div class="prog-fill ${pfill}" style="width:${prog}%"></div></div>
-        <div style="font-size:10px;color:var(--c-text2);margin-top:2px">${prog}%</div>
-      </td>
-      <td style="${pnlSt}">${pnlStr}</td>
-      <td><span class="badge badge-gray">${score}</span></td>
-      <td>${auto}</td>
-      <td>
-        <div style="display:flex;gap:5px">
-          <button class="btn btn-danger btn-sm" onclick="openSell('${p.ticker}','${nm}',${p.quantity||0})">청산</button>
-          <button class="btn btn-outline btn-sm" onclick="openEdit('${p.ticker}','${nm}',${p.tp||0},${p.sl||0})">수정</button>
-        </div>
-      </td>
-    </tr>`;
-  }).join("");
-}
-
-// ── History table ──────────────────────────────────────────────
-function renderHistory(history) {
-  const tb = $("#histTbody");
-  if (!history || !history.length) {
-    tb.innerHTML = `<tr><td colspan="7" style="text-align:center;color:var(--c-text2);padding:40px">이력 없음</td></tr>`;
-    return;
-  }
-  tb.innerHTML = history.map(h => {
-    const pnl = parseFloat(h.pnl_pct);
-    const pnlSt = pnl >= 0 ? "color:#16a34a;font-weight:600" : "color:#dc2626;font-weight:600";
-    const auto = h.auto_traded ? `<span class="badge badge-blue" style="font-size:10px">자동</span>` : `<span class="badge badge-gray" style="font-size:10px">수동</span>`;
-    const exitDate = h.exit_date || "--";
-    const shortDate = exitDate.length === 10 ? exitDate.slice(5) : exitDate;
-    return `<tr>
-      <td>
-        <div class="tbl-name" style="font-weight:600" title="${h.name}">${h.name}</div>
-        <div style="font-size:11px;color:var(--c-text2)">${h.ticker}</div>
-      </td>
-      <td style="font-size:12px;color:var(--c-text2)"><span class="date-full">${exitDate}</span><span class="date-short">${shortDate}</span></td>
-      <td>${reasonBadge(h.exit_reason)}</td>
-      <td style="${pnlSt}">${(pnl>=0?"+":"")+pnl.toFixed(2)}%</td>
-      <td style="font-size:12px">${h.entry_price ? h.entry_price.toLocaleString() : "--"}</td>
-      <td style="font-size:12px">${h.exit_price ? h.exit_price.toLocaleString() : "--"}</td>
-      <td>${auto}</td>
-    </tr>`;
-  }).join("");
-}
-
-// ── Filter bars ────────────────────────────────────────────────
-function renderFilterBars(data) {
-  const el = $("#filterBars");
-  if (!data || !data.length) {
-    el.innerHTML = `<div style="color:var(--c-text2);font-size:13px;padding:8px 0">14:30 스크리닝 이후 데이터가 표시됩니다</div>`;
-    return;
-  }
-  const latest = data[data.length - 1];
-  $("#filterTs").textContent = latest.date + " " + latest.time;
-  const fc = latest.filter_counts || {};
-  const max = Math.max(...Object.values(fc), 1);
-  const sorted = Object.entries(fc).sort((a, b) => b[1] - a[1]).filter(([,v]) => v > 0);
-  el.innerHTML = sorted.map(([k, v]) => `
-    <div class="filter-bar-row">
-      <span class="filter-name">${k}</span>
-      <div class="filter-bar-bg"><div class="filter-bar-fill" style="width:${Math.round(v/max*100)}%"></div></div>
-      <span class="filter-count">${v.toLocaleString()}</span>
-    </div>`).join("");
-}
-
-// ── Main data load ─────────────────────────────────────────────
-function loadData() {
-  fetch("/api/data?token=" + TOKEN)
+// ── Portfolio (overview) ───────────────────────────────────────
+function loadPortfolio() {
+  fetch("/api/portfolio?token=" + TOKEN)
     .then(r => { if (!r.ok) throw r; return r.json(); })
     .then(d => {
       $("#nowTs").textContent = d.now;
@@ -1480,25 +1202,30 @@ function loadData() {
       $("#botRoleLabel").textContent = d.kis_mode + " 운용 중";
       $("#autoTradeStatus").textContent = at ? "ON" : "OFF";
       $("#autoTradeStatus").style.color = at ? "#16a34a" : "#94a3b8";
-      const amt = d.trade_amount || 0;
-      $("#botTradeAmt").textContent = amt >= 10000 ? (amt/10000).toFixed(0) + "만원" : amt.toLocaleString() + "원";
-      $("#tradeAmtInp").value = amt;
-      $("#posTs").textContent = "기준: " + d.now;
-      renderKpi(d.stats || {});
-      renderPositions(d.positions || []);
-      renderHistory(d.history || []);
-      renderRings(d.reasons || {});
-      renderEquity(d.equity_dates || [], d.equity_curve || []);
-      $("#eqTs").textContent = "기준: " + d.now;
+      $("#botHolding").textContent = d.count + "종목";
+
+      $("#kpiTotal").textContent  = won(d.total);
+      $("#kpiEquity").textContent = won(d.equity);
+      $("#kpiCash").textContent   = won(d.cash);
+      const ret = d.total_return || 0;
+      const retEl = $("#kpiRet");
+      retEl.textContent = (ret >= 0 ? "+" : "") + ret.toFixed(2) + "%";
+      retEl.className = "kpi-value " + (ret >= 0 ? "green" : "red");
+      const arrow = $("#kpiRetArrow");
+      if (arrow) { arrow.textContent = ret >= 0 ? "↑" : "↓"; arrow.style.color = ret >= 0 ? "#059669" : "#DC2626"; }
+      $("#kpiCount").textContent = d.count;
+      $("#kpiCashW").textContent = (d.cash_weight || 0).toFixed(1) + "%";
+
+      renderAllocation(d.holdings || [], d.cash_weight || 0);
     })
     .catch(() => toast("⚠️ 데이터 로드 실패"));
-}
 
-// ── Screening log ──────────────────────────────────────────────
-function loadScreeningLog() {
-  fetch("/api/screening-log?token=" + TOKEN)
+  fetch("/api/rebalance/history?token=" + TOKEN)
     .then(r => r.json())
-    .then(data => { if (Array.isArray(data)) renderFilterBars(data); })
+    .then(d => {
+      renderReturnCurve(d.dates || [], d.return_curve || []);
+      $("#eqTs").textContent = "리밸런싱 " + (d.dates ? d.dates.length : 0) + "회";
+    })
     .catch(() => {});
 }
 
@@ -1515,64 +1242,11 @@ function loadLogs() {
     .catch(() => { $("#logBox").textContent = "로그 로드 실패"; });
 }
 
-// ── Backtest ───────────────────────────────────────────────────
-let btData = {}, btActive = "live", btChartObj = null;
-function loadBacktest() {
-  if (Object.keys(btData).length) { renderBt(btActive); return; }
-  fetch("/api/backtest?token=" + TOKEN)
-    .then(r => r.json())
-    .then(d => { btData = d; renderBt(btActive); })
-    .catch(() => toast("⚠️ 백테스트 로드 실패"));
-}
-function btSwitch(btn, key) {
-  $$(".bt-tab").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
-  btActive = key;
-  renderBt(key);
-}
-function renderBt(key) {
-  const d = btData[key];
-  const kpiEl = $("#btKpi");
-  if (!d) {
-    kpiEl.innerHTML = `<div style="color:var(--c-text2);padding:16px">데이터 없음 (백테스트 CSV 파일 확인)</div>`;
-    return;
-  }
-  const {total=0, wins=0, losses=0, win_rate=0, pf=0, cum_pct=0} = d;
-  kpiEl.innerHTML = `
-    <div class="kpi-card"><div class="kpi-label">총 거래</div><div class="kpi-value neutral">${total}</div><div class="kpi-sub">승 ${wins} / 패 ${losses}</div></div>
-    <div class="kpi-card"><div class="kpi-label">승률</div><div class="kpi-value ${win_rate>=40?"green":"red"}">${win_rate.toFixed(1)}%</div></div>
-    <div class="kpi-card"><div class="kpi-label">Profit Factor</div><div class="kpi-value ${pf>=1?"green":"red"}">${pf.toFixed(2)}</div></div>
-    <div class="kpi-card"><div class="kpi-label">누적 PnL</div><div class="kpi-value ${cum_pct>=0?"green":"red"}">${(cum_pct>=0?"+":"")+cum_pct.toFixed(1)}%</div></div>
-  `;
-  const ctx = $("#btChart").getContext("2d");
-  if (btChartObj) btChartObj.destroy();
-  btChartObj = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: d.dates || [],
-      datasets: [{
-        label: d.label || key, data: d.curve || [],
-        borderColor: "#10B981", backgroundColor: "rgba(16,185,129,.1)",
-        fill: true, tension: 0.3, pointRadius: 0, borderWidth: 2
-      }]
-    },
-    options: {
-      responsive: true, maintainAspectRatio: false,
-      plugins: {legend: {display: false}},
-      scales: {
-        x: {ticks: {maxTicksLimit: 8, font:{size:11}, color:"#94a3b8"}, grid:{display:false}},
-        y: {ticks: {font:{size:11}, color:"#94a3b8", callback: v => v.toFixed(0)+"%"}, grid:{color:"#f0f4f8"}}
-      }
-    }
-  });
-}
-
 // ── Init ───────────────────────────────────────────────────────
 renderCalendar();
-loadData();
-loadScreeningLog();
-setInterval(loadData, 60000);
-setInterval(loadScreeningLog, 300000);
+loadPortfolio();
+loadRebalance();
+setInterval(loadPortfolio, 60000);
 </script>
 </body>
 </html>"""

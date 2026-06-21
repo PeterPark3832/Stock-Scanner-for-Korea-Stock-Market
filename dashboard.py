@@ -327,6 +327,35 @@ async def api_sell(ticker: str, request: Request, token: str = ""):
                       f"주문번호: {result['order_no']} | PnL: {pnl:+.2f}%")
     return JSONResponse({"ok": True, "order_no": result["order_no"]})
 
+@app.get("/api/rebalance")
+def api_rebalance(token: str = ""):
+    auth(token)
+    try:
+        from scanner.strategy_rebalance import compute_target_weights
+        targets = compute_target_weights()
+    except Exception as e:
+        return JSONResponse({"ok": False, "msg": f"전략 계산 실패: {e}"}, status_code=500)
+    current = [p for p in load_positions() if p.get("strategy") == "kr_gem"]
+    current_by_ticker = {p["ticker"]: p for p in current}
+    rows = []
+    for t in targets:
+        cur  = current_by_ticker.get(t["ticker"])
+        live = get_price(t["ticker"])
+        rows.append({
+            **t,
+            "current_qty":   cur["quantity"] if cur else 0,
+            "current_price": live["current"] if live else 0,
+        })
+    last_rebalance = max((p.get("entry_date", "") for p in current), default="")
+    return JSONResponse({"ok": True, "rows": rows, "last_rebalance": last_rebalance})
+
+@app.post("/api/rebalance/execute")
+def api_rebalance_execute(token: str = ""):
+    auth(token)
+    open(os.path.join(BASE_DIR, "_rebalance_now.flag"), "w").close()
+    send_telegram("🖥️ *대시보드* — 수동 리밸런싱 요청 전달\n실행 중인 봇이 곧 처리합니다")
+    return JSONResponse({"ok": True, "msg": "리밸런싱 요청 전달 — 1분 내 처리됩니다"})
+
 @app.get("/api/backtest")
 def api_backtest(token: str = ""):
     auth(token)
@@ -732,6 +761,10 @@ section.active{display:block}
       <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.414A2 2 0 0 0 15.414 6L12 2.586A2 2 0 0 0 10.586 2H6Zm2 7a1 1 0 0 1 1-1h2a1 1 0 1 1 0 2H9a1 1 0 0 1-1-1Zm1 3a1 1 0 1 0 0 2h2a1 1 0 1 0 0-2H9Z" clip-rule="evenodd"/></svg>
       <span>보유 포지션</span>
     </a></li>
+    <li><a href="#" data-sec="rebalance" onclick="showSection('rebalance');return false">
+      <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 0 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
+      <span>리밸런싱</span>
+    </a></li>
     <li><a href="#" data-sec="history" onclick="showSection('history');return false">
       <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
       <span>거래 이력</span>
@@ -909,6 +942,29 @@ section.active{display:block}
   </div>
 </section>
 
+<!-- ── Rebalance ── -->
+<section id="sec-rebalance">
+  <div class="section-hd">
+    <div>
+      <div class="section-title">kr_gem 리밸런싱</div>
+      <div class="section-sub" id="rebalTs">마지막 리밸런싱: --</div>
+    </div>
+    <button class="btn btn-primary btn-sm" onclick="confirmRebalance()">지금 리밸런싱 실행</button>
+  </div>
+  <div class="card">
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr>
+          <th>종목</th><th>목표 비중</th><th>현재가</th><th>보유 수량</th>
+        </tr></thead>
+        <tbody id="rebalTbody">
+          <tr><td colspan="4" style="text-align:center;color:var(--c-text2);padding:40px">로딩 중...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 <!-- ── History ── -->
 <section id="sec-history">
   <div class="section-hd">
@@ -978,6 +1034,10 @@ section.active{display:block}
   <button class="mnav-btn" onclick="showSection('positions');mnavSet(this)">
     <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7.414A2 2 0 0 0 15.414 6L12 2.586A2 2 0 0 0 10.586 2H6Z" clip-rule="evenodd"/></svg>
     포지션
+  </button>
+  <button class="mnav-btn" onclick="showSection('rebalance');mnavSet(this)">
+    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 0 1-9.201 2.466l-.312-.311h2.433a.75.75 0 0 0 0-1.5H3.989a.75.75 0 0 0-.75.75v4.242a.75.75 0 0 0 1.5 0v-2.43l.31.31a7 7 0 0 0 11.712-3.138.75.75 0 0 0-1.449-.39Zm1.23-3.723a.75.75 0 0 0 .219-.53V2.929a.75.75 0 0 0-1.5 0V5.36l-.31-.31A7 7 0 0 0 3.239 8.188a.75.75 0 0 0 1.448.389A5.5 5.5 0 0 1 13.89 6.11l.311.31h-2.432a.75.75 0 0 0 0 1.5h4.243a.75.75 0 0 0 .53-.219Z" clip-rule="evenodd"/></svg>
+    리밸런싱
   </button>
   <button class="mnav-btn" onclick="showSection('history');mnavSet(this)">
     <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16Zm1-12a1 1 0 1 0-2 0v4a1 1 0 0 0 .293.707l2.828 2.829a1 1 0 1 0 1.415-1.415L11 9.586V6Z" clip-rule="evenodd"/></svg>
@@ -1052,6 +1112,29 @@ function showSection(sec) {
   $$(".sb-nav li a").forEach(a => a.classList.toggle("active", a.dataset.sec === sec));
   if (sec === "logs") loadLogs();
   if (sec === "backtest") loadBacktest();
+  if (sec === "rebalance") loadRebalance();
+}
+
+// ── Rebalance ──────────────────────────────────────────────────
+function loadRebalance() {
+  fetch("/api/rebalance?token=" + TOKEN).then(r => r.json()).then(d => {
+    if (!d.ok) { toast("❌ " + d.msg); return; }
+    $("#rebalTs").textContent = "마지막 리밸런싱: " + (d.last_rebalance || "없음");
+    $("#rebalTbody").innerHTML = d.rows.length ? d.rows.map(row => `
+      <tr>
+        <td>${row.name} <span style="color:var(--c-text2);font-size:11px">(${row.ticker})</span></td>
+        <td>${row.weight.toFixed(1)}%</td>
+        <td>${row.price.toLocaleString()}원</td>
+        <td>${row.current_qty}주</td>
+      </tr>
+    `).join("") : `<tr><td colspan="4" style="text-align:center;color:var(--c-text2);padding:40px">목표 비중 계산 실패 — 잠시 후 다시 시도하세요</td></tr>`;
+  }).catch(() => toast("❌ 리밸런싱 데이터 조회 실패"));
+}
+function confirmRebalance() {
+  if (!confirm("지금 kr_gem 리밸런싱을 실행할까요?\n실행 중인 봇이 매도/매수 주문을 즉시 전송합니다.")) return;
+  fetch("/api/rebalance/execute?token=" + TOKEN, {method: "POST"}).then(r => r.json()).then(d => {
+    toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg);
+  }).catch(() => toast("❌ 리밸런싱 요청 실패"));
 }
 function mnavSet(btn) {
   $$(".mnav-btn").forEach(b => b.classList.remove("active"));

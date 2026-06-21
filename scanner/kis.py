@@ -216,27 +216,21 @@ def calc_order_qty(price: int, budget: int) -> int:
     return budget // price
 
 
-def sync_kis_holdings() -> int:
-    """KIS 실제 보유 종목을 positions.json에 동기화."""
-    # import here to avoid circular: positions imports notify which imports config
-    from scanner.positions import load_positions, save_positions
-
+def get_account_holdings() -> list[dict]:
+    """KIS 실제 보유 종목 조회 → [{ticker, name, qty, avg_price}]. 실패 시 []."""
     token = get_kis_access_token()
     if not token:
-        log.warning("[KIS 동기화] 토큰 발급 실패 — 건너뜀")
-        return 0
+        log.warning("[KIS 잔고조회] 토큰 발급 실패 — 건너뜀")
+        return []
     cano, acnt_prdt = _parse_account()
     if not cano:
-        log.warning("[KIS 동기화] KIS_ACCOUNT_NO 미설정 — 건너뜀")
-        return 0
+        log.warning("[KIS 잔고조회] KIS_ACCOUNT_NO 미설정 — 건너뜀")
+        return []
 
     tr_id = "TTTC8434R" if _KIS_MODE == "real" else "VTTC8434R"
-    base  = ("https://openapi.koreainvestment.com:9443"
-             if _KIS_MODE == "real"
-             else "https://openapivts.koreainvestment.com:29443")
     try:
         res = requests.get(
-            f"{base}/uapi/domestic-stock/v1/trading/inquire-balance",
+            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
             headers={
                 "Authorization": f"Bearer {token}",
                 "appkey":        KIS_APP_KEY,
@@ -262,20 +256,39 @@ def sync_kis_holdings() -> int:
         res.raise_for_status()
         data = res.json()
     except Exception as e:
-        log.error(f"[KIS 동기화] API 호출 실패: {e}")
-        return 0
+        log.error(f"[KIS 잔고조회] API 호출 실패: {e}")
+        return []
 
     if data.get("rt_cd") != "0":
-        log.warning(f"[KIS 동기화] API 오류: {data.get('msg1', '')}")
-        return 0
+        log.warning(f"[KIS 잔고조회] API 오류: {data.get('msg1', '')}")
+        return []
 
-    holdings = data.get("output1", [])
-    if not holdings:
-        log.info("[KIS 동기화] 보유 종목 없음")
-        return 0
+    out = []
+    for h in data.get("output1", []):
+        ticker = h.get("pdno", "").strip()
+        qty    = int(h.get("hldg_qty", "0"))
+        if not ticker or qty <= 0:
+            continue
+        out.append({
+            "ticker":    ticker,
+            "name":      h.get("prdt_name", ticker),
+            "qty":       qty,
+            "avg_price": int(float(h.get("pchs_avg_pric", "0"))),
+        })
+    return out
 
+
+def sync_kis_holdings() -> int:
+    """KIS 실제 보유 종목을 positions.json에 동기화 (눌림목 전략용 — TP/SL 기본값 적용)."""
+    # import here to avoid circular: positions imports notify which imports config
+    from scanner.positions import load_positions, save_positions
     from scanner.calendar import KST
     from datetime import datetime as _dt
+
+    holdings = get_account_holdings()
+    if not holdings:
+        log.info("[KIS 동기화] 보유 종목 없음 또는 조회 실패")
+        return 0
 
     existing   = load_positions()
     exist_set  = {p["ticker"] for p in existing}
@@ -283,16 +296,8 @@ def sync_kis_holdings() -> int:
     added      = 0
 
     for h in holdings:
-        ticker = h.get("pdno", "").strip()
-        qty    = int(h.get("hldg_qty", "0"))
-        if not ticker or qty <= 0:
-            continue
-        if ticker in exist_set:
-            continue
-
-        avg_price = int(float(h.get("pchs_avg_pric", "0")))
-        name      = h.get("prdt_name", ticker)
-        if avg_price <= 0:
+        ticker, qty, avg_price, name = h["ticker"], h["qty"], h["avg_price"], h["name"]
+        if ticker in exist_set or avg_price <= 0:
             continue
 
         tp = int(avg_price * (1 + STRATEGY["tp_pct"]))

@@ -14,16 +14,18 @@ from scanner.logger import log, setup_logger
 from scanner.config import (
     STRATEGY, KIS_ACCOUNT_NO, TRADE_AMOUNT_PER_STOCK,
     _KIS_MODE, _AUTO_TRADE_INIT, TELEGRAM_CHAT_IDS,
+    STRATEGY_MODE, REBALANCE_TIME,
 )
 from scanner import state
 from scanner.notify import send_telegram
-from scanner.calendar import KST, is_market_closed
+from scanner.calendar import KST, is_market_closed, is_first_trading_day_of_month
 from scanner.kis import sync_kis_holdings
 
 from scanner.job_heartbeat   import job_heartbeat
 from scanner.job_monitor     import job_monitor_positions, job_morning_sl_check
 from scanner.job_screener    import job_first_screen, job_second_screen
 from scanner.job_preload     import job_preload_kis_token
+from scanner.job_rebalance   import execute_rebalance
 from scanner.telegram_poll   import telegram_polling_loop
 
 from datetime import datetime
@@ -54,6 +56,18 @@ def _check_dashboard_flags() -> None:
             log.info(f"[대시보드] {label}")
             send_telegram(f"{'⏸' if new_state else '▶️'} *{label}*")
 
+    rebalance_flag = os.path.join(_BASE, "_rebalance_now.flag")
+    if os.path.exists(rebalance_flag):
+        try:
+            os.remove(rebalance_flag)
+        except OSError:
+            pass
+        log.info("[대시보드] 수동 리밸런싱 요청 수신")
+        threading.Thread(
+            target=lambda: _safe_run(execute_rebalance, "수동 리밸런싱"),
+            daemon=True, name="manual-rebalance",
+        ).start()
+
 
 def _handle_shutdown(signum, frame) -> None:
     log.info(f"[shutdown] 신호 수신 ({signum}) — 안전 종료 중...")
@@ -63,10 +77,26 @@ def _handle_shutdown(signum, frame) -> None:
 def send_startup_message() -> None:
     now          = datetime.now(KST)
     kis_mode_str = "🔴 실전투자" if _KIS_MODE == "real" else "🟡 모의투자"
-    mf_str       = "활성화" if STRATEGY["use_market_filter"] else "비활성화"
-    at_str       = (f"🤖 자동매매 ON (종목당 {TRADE_AMOUNT_PER_STOCK:,}원)"
-                    if state._auto_trade_enabled else "📋 자동매매 OFF (수동 모드)")
     acct_str     = f"계좌: {KIS_ACCOUNT_NO}" if KIS_ACCOUNT_NO else "⚠️ KIS_ACCOUNT_NO 미설정"
+
+    if STRATEGY_MODE == "rebalance":
+        send_telegram(
+            f"✅ *kr_gem 멀티에셋 리밸런싱 봇 시작* (채팅방 {len(TELEGRAM_CHAT_IDS)}개)\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 시작 시각: {now.strftime('%Y-%m-%d %H:%M')}\n"
+            f"🔑 KIS 모드: {kis_mode_str} | {acct_str}\n"
+            f"📦 전략: KOSPI200·S&P500·나스닥100·금·반도체 중 모멘텀 상위 3개\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"⏰ 09:00 → Heartbeat\n"
+            f"⏰ {REBALANCE_TIME} → 매월 첫 거래일에 자동 리밸런싱 실행\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"대시보드 '리밸런싱' 탭에서 수동 실행도 가능합니다"
+        )
+        return
+
+    mf_str = "활성화" if STRATEGY["use_market_filter"] else "비활성화"
+    at_str = (f"🤖 자동매매 ON (종목당 {TRADE_AMOUNT_PER_STOCK:,}원)"
+              if state._auto_trade_enabled else "📋 자동매매 OFF (수동 모드)")
     send_telegram(
         f"✅ *스윙 눌림목 검색기 v5.0 시작* (채팅방 {len(TELEGRAM_CHAT_IDS)}개)\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -95,6 +125,10 @@ def send_startup_message() -> None:
 
 
 def run_catchup() -> None:
+    if STRATEGY_MODE == "rebalance":
+        log.info("  STRATEGY_MODE=rebalance — 일중 catch-up 없음 (월간 리밸런싱만 사용)\n")
+        return
+
     now = datetime.now(KST)
     d = now.date()
 
@@ -145,15 +179,28 @@ if __name__ == "__main__":
             "예: KIS_ACCOUNT_NO=50071234-01"
         )
 
-    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat,           "Heartbeat"))
-    schedule.every().day.at("09:10", "Asia/Seoul").do(lambda: _safe_run(job_morning_sl_check,  "갭오픈 SL 체크"))
-    schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
-    schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))
-    schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
-    schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,        "1차 스크리닝"))
-    schedule.every().day.at("14:50", "Asia/Seoul").do(lambda: _safe_run(job_preload_kis_token,  "KIS 토큰 선발급"))
-    schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))
-    schedule.every().day.at("15:25", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장마감 모니터링(15:25)"))
+    schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat, "Heartbeat"))
+
+    if STRATEGY_MODE == "rebalance":
+        def _rebalance_if_first_trading_day() -> None:
+            now = datetime.now(KST)
+            if is_first_trading_day_of_month(now):
+                execute_rebalance()
+            else:
+                log.info("  오늘은 이번달 첫 거래일이 아님 — kr_gem 리밸런싱 skip")
+
+        schedule.every().day.at(REBALANCE_TIME, "Asia/Seoul").do(
+            lambda: _safe_run(_rebalance_if_first_trading_day, "월간 리밸런싱(kr_gem)")
+        )
+    else:
+        schedule.every().day.at("09:10", "Asia/Seoul").do(lambda: _safe_run(job_morning_sl_check,  "갭오픈 SL 체크"))
+        schedule.every().day.at("10:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(10시)"))
+        schedule.every().day.at("11:30", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(11:30)"))
+        schedule.every().day.at("13:00", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장중 모니터링(13시)"))
+        schedule.every().day.at("14:30", "Asia/Seoul").do(lambda: _safe_run(job_first_screen,        "1차 스크리닝"))
+        schedule.every().day.at("14:50", "Asia/Seoul").do(lambda: _safe_run(job_preload_kis_token,  "KIS 토큰 선발급"))
+        schedule.every().day.at("15:20", "Asia/Seoul").do(lambda: _safe_run(job_second_screen,      "2차 검증"))
+        schedule.every().day.at("15:25", "Asia/Seoul").do(lambda: _safe_run(job_monitor_positions,  "장마감 모니터링(15:25)"))
 
     log.info("\n✅ 스윙 눌림목 검색기 v5.0 시작 (모듈화)")
     log.info(f"  🔑 KIS 모드: {'실전투자' if _KIS_MODE == 'real' else '모의투자'}")
@@ -166,7 +213,7 @@ if __name__ == "__main__":
 
     send_startup_message()
 
-    if KIS_ACCOUNT_NO:
+    if KIS_ACCOUNT_NO and STRATEGY_MODE != "rebalance":
         log.info("[KIS 동기화] 실제 보유 종목 조회 중...")
         n = sync_kis_holdings()
         if n == 0:

@@ -24,6 +24,9 @@ KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")
 TRADE_AMOUNT_PER_STOCK = int(os.getenv("TRADE_AMOUNT_PER_STOCK", "1000000"))
 _AUTO_TRADE_INIT = os.getenv("AUTO_TRADE", "false").lower() == "true"
 
+STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(kr_gem ETF) | "breakout"(눌림목)
+REBALANCE_TIME = os.getenv("REBALANCE_TIME", "09:05")
+
 _KIS_MODE = os.getenv("KIS_MODE", "paper").lower()
 KIS_BASE_URL = (
     "https://openapi.koreainvestment.com:9443"

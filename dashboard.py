@@ -402,8 +402,13 @@ def api_rebalance(token: str = ""):
                          "price": h["price"], "current_qty": h["qty"],
                          "current_price": h["price"], "current_weight": h["current_weight"],
                          "target_qty": 0, "diff_qty": -h["qty"]})
+    # 최소 필요금액: 목표 각 종목을 비중만큼 사서 1주 이상 담으려면 필요한 총자산
+    #   (총자산 × weight% ≥ price  →  총자산 ≥ price × 100/weight). 가장 큰 값이 기준.
+    need = [t["price"] * 100 / t["weight"] for t in targets if t.get("weight") and t.get("price")]
+    min_required = int(max(need)) if need else 0
     return JSONResponse({"ok": True, "rows": rows, "total_value": snap["total"],
-                         "cash": snap["cash"], "last_rebalance": snap["last_rebalance"]})
+                         "cash": snap["cash"], "last_rebalance": snap["last_rebalance"],
+                         "min_required": min_required})
 
 @app.get("/api/rebalance/history")
 def api_rebalance_history(token: str = ""):
@@ -881,7 +886,9 @@ section.active{display:block}
   <div class="kpi-grid" style="margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-label">총 평가금액</div><div class="kpi-value neutral" id="rbTotal">--</div></div>
     <div class="kpi-card"><div class="kpi-label">주문가능 현금</div><div class="kpi-value neutral" id="rbCash">--</div></div>
+    <div class="kpi-card"><div class="kpi-label">최소 필요금액</div><div class="kpi-value neutral" id="rbMin">--</div><div class="kpi-sub">3종목 각 1주 이상 매수 기준</div></div>
   </div>
+  <div id="rbWarn" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:10px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:13px"></div>
   <div class="card">
     <div class="tbl-wrap">
       <table>
@@ -1003,6 +1010,15 @@ function loadRebalance() {
     $("#rebalTs").textContent = "마지막 리밸런싱: " + (d.last_rebalance || "없음");
     $("#rbTotal").textContent = won(d.total_value);
     $("#rbCash").textContent  = won(d.cash);
+    $("#rbMin").textContent   = won(d.min_required);
+    const warn = $("#rbWarn");
+    if (d.min_required && d.total_value < d.min_required) {
+      const short = d.min_required - d.total_value;
+      warn.style.display = "block";
+      warn.innerHTML = `⚠️ 현재 평가금액(${won(d.total_value)})이 최소 필요금액(${won(d.min_required)})보다 적어 일부 종목을 1주도 매수할 수 없습니다. 약 <b>${won(short)}</b> 추가 입금이 필요합니다.`;
+    } else {
+      warn.style.display = "none";
+    }
     $("#rebalTbody").innerHTML = d.rows.length ? d.rows.map(row => {
       const diff = row.diff_qty || 0;
       const diffStr = diff === 0 ? '<span style="color:var(--c-text2)">유지</span>'

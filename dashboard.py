@@ -939,13 +939,6 @@ section.active{display:block}
   <div id="rbHistList">
     <div class="card"><div style="color:var(--c-text2);font-size:13px;padding:8px 0">리밸런싱 실행 이력이 없습니다</div></div>
   </div>
-  <div style="display:none">
-    <table><tbody id="histTbody">
-          <tr><td colspan="7" style="text-align:center;color:var(--c-text2);padding:40px">이력 없음</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
 </section>
 
 <!-- ── Logs ── -->

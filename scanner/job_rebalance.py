@@ -4,21 +4,20 @@ import os
 import time
 from datetime import datetime
 
-from scanner.strategy_rebalance import compute_target_weights, RISK_ASSETS, SAFE_ASSET
+from scanner.strategy_rebalance import compute_target_weights, get_strategy, MANAGED_UNIVERSE
 from scanner.kis import get_account_holdings, get_order_possible_cash, get_current_price, place_order
 from scanner.positions import load_positions, save_positions
-from scanner.config import REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE
+from scanner.config import REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE, STRATEGY_KEY
 from scanner.state import _POSITIONS_FLOCK
 from scanner.calendar import KST
 from scanner.notify import send_telegram
 from scanner.logger import log
 
-_UNIVERSE = set(RISK_ASSETS) | {SAFE_ASSET}
-
 
 def _current_state() -> tuple[dict[str, dict], int]:
-    """kr_gem 유니버스에 속한 보유 종목과 가용 현금 조회. 그 외(눌림목) 보유 종목은 무시."""
-    holdings = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in _UNIVERSE}
+    """봇 관리 유니버스(5전략 합집합)에 속한 보유 종목과 가용 현금 조회.
+    전략 전환 시 옛 전략 종목도 잡혀 목표=0으로 매도된다. 그 외(눌림목·수동 종목)는 무시."""
+    holdings = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in MANAGED_UNIVERSE}
     cash = get_order_possible_cash("", 0) or 0
     return holdings, cash
 
@@ -33,8 +32,8 @@ def _total_value(holdings: dict[str, dict], cash: int) -> int:
 
 
 def preview_rebalance() -> dict:
-    """주문 없이 목표 비중·현재 비중·필요 주문 수량만 계산."""
-    targets = compute_target_weights()
+    """주문 없이 목표 비중·현재 비중·필요 주문 수량만 계산 (활성 전략 기준)."""
+    targets = compute_target_weights(STRATEGY_KEY)
     holdings, cash = _current_state()
     total = _total_value(holdings, cash)
 
@@ -166,9 +165,10 @@ def _record_rebalance_log(plan: dict, results: list[dict]) -> None:
 
 
 def _save_rebalance_positions(plan: dict) -> None:
-    """positions.json에서 strategy=='kr_gem' 레코드를 최신 목표 보유로 교체."""
+    """positions.json에서 리밸런싱 관리(strategy 태그 보유) 레코드를 최신 목표 보유로 교체."""
+    from scanner.strategy_rebalance import STRATEGIES
     now_str  = datetime.now(KST).strftime("%Y-%m-%d")
-    existing = [p for p in load_positions() if p.get("strategy") != "kr_gem"]
+    existing = [p for p in load_positions() if p.get("strategy") not in STRATEGIES]
     for r in plan["rows"]:
         if r["target_qty"] <= 0:
             continue
@@ -187,7 +187,7 @@ def _save_rebalance_positions(plan: dict) -> None:
             "pullback_depth":  None,
             "quantity":        r["target_qty"],
             "auto_traded":     True,
-            "strategy":        "kr_gem",
+            "strategy":        STRATEGY_KEY,
             "target_weight":   r["weight"],
         })
     save_positions(existing)

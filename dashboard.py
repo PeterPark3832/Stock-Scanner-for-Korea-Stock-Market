@@ -411,20 +411,47 @@ def api_portfolio(token: str = ""):
     ret = round((snap["total"] - base) / base * 100, 2) if base else 0.0
     nxt = _next_rebalance_date()
     d_day = (nxt - datetime.now(KST).date()).days
+    from scanner.strategy_rebalance import get_strategy
+    skey = read_env("STRATEGY_KEY", "kr_gem")
     return JSONResponse({
         "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
         "auto_trade":   read_env("AUTO_TRADE", "false").lower() == "true",
         "kis_mode":     "실전투자" if read_env("KIS_MODE", "paper") == "real" else "모의투자",
         "next_rebalance": nxt.strftime("%Y-%m-%d"), "d_day": d_day,
+        "strategy": skey, "strategy_name": get_strategy(skey)["name"],
         **snap, "total_return": ret,
     })
+
+@app.get("/api/strategies")
+def api_strategies(token: str = ""):
+    auth(token)
+    from scanner.strategy_rebalance import list_strategies
+    return JSONResponse({"current": read_env("STRATEGY_KEY", "kr_gem"),
+                         "strategies": list_strategies()})
+
+@app.post("/api/strategy")
+async def api_set_strategy(request: Request, token: str = ""):
+    auth(token)
+    from scanner.strategy_rebalance import STRATEGIES, get_strategy
+    body = await request.json()
+    key  = (body.get("key") or "").strip()
+    if key not in STRATEGIES:
+        return JSONResponse({"ok": False, "msg": "알 수 없는 전략입니다"}, status_code=400)
+    old = read_env("STRATEGY_KEY", "kr_gem")
+    write_env("STRATEGY_KEY", key)
+    subprocess.Popen(["systemctl", "restart", "stock-scanner"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    name = get_strategy(key)["name"]
+    send_telegram(f"🖥️ *대시보드* — 리밸런싱 전략 변경\n{old} → *{key}* ({name})\n"
+                  f"봇 재시작 중 · 다음 리밸런싱부터 적용")
+    return JSONResponse({"ok": True, "msg": f"전략을 '{name}'(으)로 변경 — 봇 재시작 중", "key": key})
 
 @app.get("/api/rebalance")
 def api_rebalance(token: str = ""):
     auth(token)
     try:
         from scanner.strategy_rebalance import compute_target_weights
-        targets = compute_target_weights()
+        targets = compute_target_weights(read_env("STRATEGY_KEY", "kr_gem"))
     except Exception as e:
         return JSONResponse({"ok": False, "msg": f"전략 계산 실패: {e}"}, status_code=500)
     snap = _portfolio_snapshot()
@@ -717,6 +744,9 @@ input:checked+.slider:before{transform:translateX(20px)}
 .modal-bg.open{display:flex}
 .modal{background:var(--c-surface);border-radius:18px;padding:28px;width:340px;max-width:100%}
 .modal h3{font-size:16px;font-weight:700;margin-bottom:18px}
+.strat-opt{border:1px solid var(--c-border);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .12s,background .12s}
+.strat-opt:hover{border-color:var(--c-primary)}
+.strat-opt.sel{border-color:var(--c-primary);background:rgba(0,200,5,.06);box-shadow:inset 0 0 0 1px var(--c-primary)}
 .form-group{margin-bottom:14px}
 .form-label{font-size:12px;color:var(--c-text2);font-weight:600;margin-bottom:5px;display:block}
 .form-input{width:100%;padding:9px 12px;border:1.5px solid var(--c-border);border-radius:8px;font-size:14px;outline:none;transition:border .15s;background:var(--c-surface);color:var(--c-text)}
@@ -953,6 +983,10 @@ section.active{display:block}
           <div class="bot-stat-label">보유</div>
           <div class="bot-stat-value" id="botHolding">--</div>
         </div>
+        <div class="bot-stat">
+          <div class="bot-stat-label">전략</div>
+          <div class="bot-stat-value" id="botStrategy">--</div>
+        </div>
       </div>
     </div>
 
@@ -976,10 +1010,21 @@ section.active{display:block}
 <section id="sec-rebalance">
   <div class="section-hd">
     <div>
-      <div class="section-title">kr_gem 리밸런싱</div>
+      <div class="section-title">리밸런싱</div>
       <div class="section-sub" id="rebalTs">마지막 리밸런싱: --</div>
     </div>
     <button class="btn btn-primary btn-sm" onclick="confirmRebalance()">지금 리밸런싱 실행</button>
+  </div>
+  <!-- Strategy banner -->
+  <div class="card" style="margin-bottom:16px;display:flex;align-items:center;gap:14px">
+    <div style="flex:1;min-width:0">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="font-weight:700;font-size:15px" id="stratName">전략 로딩 중...</span>
+        <span class="badge badge-blue" id="stratProfile" style="display:none"></span>
+      </div>
+      <div style="font-size:12.5px;color:var(--c-text2);margin-top:4px" id="stratDesc"></div>
+    </div>
+    <button class="btn btn-outline btn-sm" onclick="openStrategyModal()">전략 변경</button>
   </div>
   <div class="kpi-grid" style="margin-bottom:16px">
     <div class="kpi-card"><div class="kpi-label">총 평가금액</div><div class="kpi-value neutral" id="rbTotal">--</div></div>
@@ -1074,6 +1119,19 @@ section.active{display:block}
   </div>
 </div>
 
+<!-- Strategy Modal -->
+<div class="modal-bg" id="strategyModal">
+  <div class="modal" style="max-width:520px">
+    <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h14M3 10h14M3 14h9"/></svg>리밸런싱 전략 선택</h3>
+    <div style="font-size:12px;color:var(--c-text2);margin:-4px 0 12px">선택한 전략은 다음 리밸런싱(월간 자동 또는 수동 실행)부터 적용됩니다. 변경 시 봇이 재시작됩니다.</div>
+    <div id="strategyList" style="display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow-y:auto"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-primary" style="flex:1" onclick="applyStrategy()">적용</button>
+      <button class="btn btn-outline" style="flex:1" onclick="closeModal('strategyModal')">취소</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1081,6 +1139,9 @@ const TOKEN = "__TOKEN__";
 const KR_HOLIDAYS = __HOLIDAYS__;
 let REBAL_EXEC = new Set();   // 과거 리밸런싱 실행일 (YYYY-MM-DD)
 let NEXT_REBAL = "";          // 다음 리밸런싱 예정일 (YYYY-MM-DD)
+let STRATEGIES_CACHE = [];    // 전략 목록
+let CUR_STRATEGY = "";        // 현재 활성 전략 key
+let SEL_STRATEGY = "";        // 모달에서 선택 중인 전략 key
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -1097,7 +1158,62 @@ function showSection(sec) {
 
 // ── Rebalance ──────────────────────────────────────────────────
 const won = v => (v || 0).toLocaleString() + "원";
+// ── Strategy ───────────────────────────────────────────────────
+const PROFILE_BADGE = {"방어":"badge-blue","밸런스":"badge-green","공격":"badge-red"};
+function loadStrategies() {
+  return fetch("/api/strategies?token=" + TOKEN).then(r => r.json()).then(d => {
+    STRATEGIES_CACHE = d.strategies || [];
+    CUR_STRATEGY = d.current || "";
+    const s = STRATEGIES_CACHE.find(x => x.key === CUR_STRATEGY);
+    if (s) {
+      $("#stratName").textContent = s.name;
+      $("#stratDesc").textContent = s.description;
+      const pb = $("#stratProfile");
+      pb.textContent = s.profile; pb.className = "badge " + (PROFILE_BADGE[s.profile] || "badge-gray");
+      pb.style.display = "inline-block";
+    }
+  }).catch(() => {});
+}
+function openStrategyModal() {
+  const render = () => {
+    SEL_STRATEGY = CUR_STRATEGY;
+    $("#strategyList").innerHTML = STRATEGIES_CACHE.map(s => {
+      const seed = s.min_seed >= 10000 ? (s.min_seed/10000).toLocaleString() + "만원" : s.min_seed + "원";
+      return `<div class="strat-opt" data-key="${s.key}" onclick="selectStrategyCard('${s.key}')">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span style="font-weight:700">${s.name}</span>
+          <span class="badge ${PROFILE_BADGE[s.profile]||'badge-gray'}" style="font-size:10px">${s.profile}</span>
+          <span style="font-size:11px;color:var(--c-text2)">상위 ${s.top_n}종목 · 권장 ${seed}+</span>
+        </div>
+        <div style="font-size:12px;color:var(--c-text2);margin-top:4px">${s.description}</div>
+      </div>`;
+    }).join("");
+    selectStrategyCard(CUR_STRATEGY);
+    $("#strategyModal").classList.add("open");
+  };
+  if (STRATEGIES_CACHE.length) render(); else loadStrategies().then(render);
+}
+function selectStrategyCard(key) {
+  SEL_STRATEGY = key;
+  $$("#strategyList .strat-opt").forEach(el => el.classList.toggle("sel", el.dataset.key === key));
+}
+function applyStrategy() {
+  if (!SEL_STRATEGY) return;
+  if (SEL_STRATEGY === CUR_STRATEGY) { toast("이미 적용 중인 전략입니다"); closeModal("strategyModal"); return; }
+  const s = STRATEGIES_CACHE.find(x => x.key === SEL_STRATEGY) || {};
+  if (!confirm(`리밸런싱 전략을 '${s.name}'(으)로 변경할까요?\n봇이 재시작되며, 다음 리밸런싱부터 적용됩니다.`)) return;
+  fetch("/api/strategy?token=" + TOKEN, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({key: SEL_STRATEGY})
+  }).then(r => r.json()).then(d => {
+    toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg);
+    closeModal("strategyModal");
+    if (d.ok) setTimeout(() => { loadStrategies(); loadRebalance(); loadPortfolio(); }, 2500);
+  }).catch(() => toast("❌ 전략 변경 실패"));
+}
+
 function loadRebalance() {
+  loadStrategies();
   fetch("/api/rebalance?token=" + TOKEN).then(r => r.json()).then(d => {
     if (!d.ok) { toast("❌ " + d.msg); $("#rebalTbody").innerHTML = `<tr><td colspan="6" style="text-align:center;color:var(--c-text2);padding:40px">목표 비중 계산 실패 — 잠시 후 다시 시도하세요</td></tr>`; return; }
     $("#rebalTs").textContent = "마지막 리밸런싱: " + (d.last_rebalance || "없음");
@@ -1331,6 +1447,7 @@ function loadPortfolio() {
       $("#autoTradeStatus").textContent = at ? "ON" : "OFF";
       $("#autoTradeStatus").style.color = at ? "#16a34a" : "#94a3b8";
       $("#botHolding").textContent = d.count + "종목";
+      if (d.strategy_name) $("#botStrategy").textContent = d.strategy_name;
 
       $("#kpiTotal").textContent  = won(d.total);
       $("#kpiEquity").textContent = won(d.equity);

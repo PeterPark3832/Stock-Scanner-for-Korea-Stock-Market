@@ -26,7 +26,8 @@ KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")
 TRADE_AMOUNT_PER_STOCK = int(os.getenv("TRADE_AMOUNT_PER_STOCK", "1000000"))
 _AUTO_TRADE_INIT = os.getenv("AUTO_TRADE", "false").lower() == "true"
 
-STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(kr_gem ETF) | "breakout"(눌림목)
+STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(ETF/모멘텀) | "breakout"(눌림목)
+STRATEGY_KEY   = os.getenv("STRATEGY_KEY", "kr_gem")              # 리밸런싱 전략 (strategy_rebalance.STRATEGIES)
 REBALANCE_TIME = os.getenv("REBALANCE_TIME", "09:05")
 
 _KIS_MODE = os.getenv("KIS_MODE", "paper").lower()

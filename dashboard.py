@@ -328,25 +328,31 @@ async def api_sell(ticker: str, request: Request, token: str = ""):
     return JSONResponse({"ok": True, "order_no": result["order_no"]})
 
 def _portfolio_snapshot() -> dict:
-    """현재 kr_gem 보유 평가 — 총평가금액·현금·보유종목·현재배분."""
-    positions = [p for p in load_positions() if p.get("strategy") == "kr_gem"]
-    holdings, equity = [], 0
+    """현재 봇 관리 보유 평가 — 총평가금액·현금·보유종목·현재배분·매입원가 대비 평가손익.
+    전략 태그(kr_gem/kr_growth 등)와 무관하게 리밸런싱이 보유한 종목 전체를 합산한다."""
+    from scanner.strategy_rebalance import STRATEGIES
+    positions = [p for p in load_positions() if p.get("strategy") in STRATEGIES]
+    holdings, equity, cost_basis = [], 0, 0
     for p in positions:
         live  = get_price(p["ticker"])
         price = live["current"] if live else p.get("entry", 0)
         qty   = p.get("quantity", 0)
+        entry = p.get("entry", 0)
         val   = price * qty
         equity += val
+        cost_basis += entry * qty
+        pnl_pct = round((price - entry) / entry * 100, 2) if entry else None
         holdings.append({"ticker": p["ticker"], "name": p.get("name", p["ticker"]),
-                         "qty": qty, "price": price, "value": val,
-                         "target_weight": p.get("target_weight", 0),
-                         "entry": p.get("entry", 0)})
+                         "qty": qty, "price": price, "value": val, "entry": entry,
+                         "pnl_pct": pnl_pct, "target_weight": p.get("target_weight", 0)})
     cash  = get_order_possible_cash() or 0
     total = equity + cash
     for h in holdings:
         h["current_weight"] = round(h["value"] / total * 100, 1) if total else 0
     last_rebalance = max((p.get("entry_date", "") for p in positions), default="")
+    unrealized = round((equity - cost_basis) / cost_basis * 100, 2) if cost_basis else 0.0
     return {"holdings": holdings, "equity": equity, "cash": cash, "total": total,
+            "cost_basis": cost_basis, "unrealized_pnl": unrealized,
             "cash_weight": round(cash / total * 100, 1) if total else 0,
             "count": len(holdings), "last_rebalance": last_rebalance}
 
@@ -406,9 +412,7 @@ def _next_rebalance_date() -> date:
 def api_portfolio(token: str = ""):
     auth(token)
     snap = _portfolio_snapshot()
-    snaps = _equity_snapshots()
-    base = snaps[0]["total"] if snaps else (snap["total"] or 0)
-    ret = round((snap["total"] - base) / base * 100, 2) if base else 0.0
+    ret = snap["unrealized_pnl"]   # 매입원가 대비 평가손익(입금 영향 없음)
     nxt = _next_rebalance_date()
     d_day = (nxt - datetime.now(KST).date()).days
     from scanner.strategy_rebalance import get_strategy
@@ -488,34 +492,33 @@ def api_rebalance_history(token: str = ""):
     auth(token)
     events = _rebalance_events()
     snaps  = _equity_snapshots()
-    # 일별 평가금액 포인트 (스냅샷) + 오늘 실시간 포인트 보강
+    # 일별 평가금액 포인트(스냅샷). 오늘은 09:00 스냅샷이 장중 매매/입금 전이라 실시간 값으로 덮어씀.
     points = {s["date"]: s.get("total", 0) for s in snaps if s.get("date")}
     today  = datetime.now(KST).strftime("%Y-%m-%d")
-    if today not in points:
-        live_total = _portfolio_snapshot()["total"]
-        if live_total:
-            points[today] = live_total
+    live_total = _portfolio_snapshot()["total"]
+    if live_total:
+        points[today] = live_total
     full_dates = sorted(points)
     totals = [points[d] for d in full_dates]
     base = totals[0] if totals else 0
-    return_curve = [round((t - base) / base * 100, 2) if base else 0.0 for t in totals]
-    # 벤치마크(KOSPI200) 정렬·정규화
-    bench_curve = []
-    if full_dates:
+    # 벤치마크(KOSPI200) — 시작 평가금액과 동일 금액을 KOSPI200에 넣었다고 가정해 원화로 환산
+    bench_value = []
+    if full_dates and base:
         bs = _benchmark_series(full_dates[0])
         if bs:
             keys = sorted(bs)
-            def closest(d):  # d 이하 가장 최근 종가
+            def closest(d):
                 prev = [k for k in keys if k <= d]
                 return bs[prev[-1]] if prev else None
             raw = [closest(d) for d in full_dates]
             b0 = next((x for x in raw if x), None)
-            bench_curve = [round((x / b0 - 1) * 100, 2) if (x and b0) else None for x in raw]
+            if b0:
+                bench_value = [int(base * x / b0) if x else None for x in raw]
     labels = [d[5:] for d in full_dates]  # MM-DD
     exec_dates = [e["ts"][:10] for e in events if e.get("ts")]
     return JSONResponse({"events": list(reversed(events)),
-                         "dates": labels, "value_curve": totals, "return_curve": return_curve,
-                         "benchmark_curve": bench_curve, "exec_dates": exec_dates})
+                         "dates": labels, "value_curve": totals,
+                         "benchmark_value": bench_value, "exec_dates": exec_dates})
 
 @app.post("/api/rebalance/execute")
 def api_rebalance_execute(token: str = ""):
@@ -925,7 +928,7 @@ section.active{display:block}
     <div class="hero-delta up" id="kpiDelta">
       <span class="hero-arrow" id="kpiRetArrow"></span>
       <span id="kpiRet">--%</span>
-      <span class="hero-delta-sub">최초 리밸런싱 대비</span>
+      <span class="hero-delta-sub">매입원가 대비 평가손익</span>
     </div>
     <div class="hero-meta">
       <span>주식 <b id="kpiEquity">--</b></span>
@@ -937,7 +940,7 @@ section.active{display:block}
   <!-- Portfolio chart -->
   <div class="card" style="margin-bottom:20px;padding:18px 20px">
     <div class="section-hd" style="margin-bottom:6px">
-      <div class="card-title" style="margin-bottom:0">포트폴리오 누적 수익률</div>
+      <div class="card-title" style="margin-bottom:0">평가금액 추이</div>
       <span class="refresh-ts" id="eqTs"></span>
     </div>
     <div class="chart-wrap" style="height:260px"><canvas id="equityChart"></canvas></div>
@@ -1382,26 +1385,25 @@ function renderAllocation(holdings, cashWeight) {
     </div>`).join("");
 }
 
-// ── Return curve ───────────────────────────────────────────────
+// ── 평가금액 추이 (원) ─────────────────────────────────────────
 let equityChart = null;
+const wonShort = v => v >= 1e8 ? (v/1e8).toFixed(2)+"억" : v >= 1e4 ? Math.round(v/1e4).toLocaleString()+"만" : (v||0).toLocaleString();
 function renderReturnCurve(dates, curve, benchmark) {
   const canvas = $("#equityChart");
   const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
-  const up = (curve.length ? curve[curve.length - 1] : 0) >= 0;
-  const line = up ? "#00C805" : "#F0463A";
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
-  grad.addColorStop(0, up ? "rgba(0,200,5,.16)" : "rgba(240,70,58,.16)");
+  grad.addColorStop(0, "rgba(0,200,5,.16)");
   grad.addColorStop(1, "rgba(0,0,0,0)");
   const hasBench = benchmark && benchmark.some(v => v != null);
   const datasets = [{
-    label: "내 포트폴리오", data: curve,
-    borderColor: line, backgroundColor: grad,
-    fill: true, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
-    pointHoverBackgroundColor: line, pointHoverBorderColor: "#fff", borderWidth: 2
+    label: "내 평가금액", data: curve,
+    borderColor: "#00C805", backgroundColor: grad,
+    fill: true, tension: 0.25, pointRadius: dates.length <= 12 ? 2.5 : 0, pointHoverRadius: 4,
+    pointHoverBackgroundColor: "#00C805", pointHoverBorderColor: "#fff", borderWidth: 2
   }];
   if (hasBench) datasets.push({
-    label: "KOSPI200", data: benchmark,
+    label: "KOSPI200 (동일 시작금액)", data: benchmark,
     borderColor: "#9AA0A6", backgroundColor: "transparent",
     fill: false, tension: 0.25, pointRadius: 0, pointHoverRadius: 4,
     borderWidth: 1.5, borderDash: [5, 4], spanGaps: true
@@ -1415,17 +1417,11 @@ function renderReturnCurve(dates, curve, benchmark) {
       plugins: {
         legend: {display: hasBench, position: "top", align: "end",
                  labels: {boxWidth: 12, boxHeight: 2, font: {size: 11}, color: "#6F7780", usePointStyle: false}},
-        tooltip: {callbacks: {label: item => " " + item.dataset.label + ": " + (item.raw >= 0 ? "+" : "") + (item.raw==null?"-":item.raw.toFixed(2)) + "%"}}
+        tooltip: {callbacks: {label: item => " " + item.dataset.label + ": " + (item.raw==null?"-":item.raw.toLocaleString()+"원")}}
       },
       scales: {
         x: {ticks: {maxTicksLimit: 8, font: {size: 11}, color: "#94a3b8"}, grid: {display: false}},
-        y: {
-          ticks: {font: {size: 11}, color: "#94a3b8", callback: v => v.toFixed(0) + "%"},
-          grid: {
-            color: ctx2 => ctx2.tick.value === 0 ? "rgba(15,23,42,.25)" : "#f0f4f8",
-            lineWidth: ctx2 => ctx2.tick.value === 0 ? 1.5 : 1,
-          }
-        }
+        y: {ticks: {font: {size: 11}, color: "#94a3b8", callback: v => wonShort(v)}, grid: {color: "#f0f4f8"}}
       }
     }
   });
@@ -1486,7 +1482,7 @@ function loadPortfolio() {
   fetch("/api/rebalance/history?token=" + TOKEN)
     .then(r => r.json())
     .then(d => {
-      renderReturnCurve(d.dates || [], d.return_curve || [], d.benchmark_curve || []);
+      renderReturnCurve(d.dates || [], d.value_curve || [], d.benchmark_value || []);
       const n = (d.dates ? d.dates.length : 0);
       $("#eqTs").textContent = n ? n + "일 추이" : "데이터 없음";
       REBAL_EXEC = new Set(d.exec_dates || []);

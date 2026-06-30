@@ -59,7 +59,6 @@ if not DASHBOARD_TOKEN or len(DASHBOARD_TOKEN) < 20:
     raise RuntimeError("DASHBOARD_TOKEN must be set in .env (minimum 20 characters)")
 _token_cache     = {"token": None, "expires_at": 0}
 _token_lock      = threading.Lock()
-_cache_lock      = threading.Lock()
 _POSITIONS_FLOCK = FileLock(os.path.join(BASE_DIR, "positions.json.lock"),    timeout=5)
 _HISTORY_FLOCK   = FileLock(os.path.join(BASE_DIR, "trade_history.csv.lock"), timeout=5)
 
@@ -80,10 +79,17 @@ def get_kis_token() -> str | None:
     except Exception:
         return None
 
+_price_cache: dict[str, tuple] = {}   # ticker -> (expires_at, result)
+_PRICE_TTL = 20                       # 초 — 한 새로고침 주기 내 중복 KIS 시세 호출 방지
+
 def get_price(ticker: str) -> dict | None:
+    hit = _price_cache.get(ticker)
+    if hit and time.time() < hit[0]:
+        return hit[1]
     token = get_kis_token()
     if not token:
         return None
+    result = None
     try:
         r = requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/quotations/inquire-price",
             headers={"Authorization": f"Bearer {token}",
@@ -93,12 +99,17 @@ def get_price(ticker: str) -> dict | None:
             params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": ticker}, timeout=5)
         d = r.json()
         if d.get("rt_cd") == "0":
-            return {"current": int(d["output"].get("stck_prpr", 0))}
+            result = {"current": int(d["output"].get("stck_prpr", 0))}
     except Exception:
         pass
-    return None
+    if result is not None:
+        _price_cache[ticker] = (time.time() + _PRICE_TTL, result)
+    return result
 
+_cash_cache: dict = {"expires_at": 0, "value": None}
 def get_order_possible_cash() -> int | None:
+    if _cash_cache["value"] is not None and time.time() < _cash_cache["expires_at"]:
+        return _cash_cache["value"]
     token = get_kis_token()
     if not token:
         return None
@@ -119,7 +130,9 @@ def get_order_possible_cash() -> int | None:
                     "CMA_EVLU_AMT_ICLD_YN": "Y", "OVRS_ICLD_YN": "N"}, timeout=5)
         d = r.json()
         if d.get("rt_cd") == "0":
-            return int(d["output"].get("ord_psbl_cash", 0))
+            val = int(d["output"].get("ord_psbl_cash", 0))
+            _cash_cache.update(expires_at=time.time() + _PRICE_TTL, value=val)
+            return val
     except Exception:
         pass
     return None
@@ -166,62 +179,6 @@ def append_history(row: dict) -> None:
                 w.writeheader()
             w.writerow(row)
 
-_hist_cache: dict = {"mtime": -1, "rows": [], "stats": {}, "dates": [], "curve": [], "reasons": {}}
-
-def get_history_cached() -> dict:
-    with _cache_lock:
-        try:
-            mtime = os.path.getmtime(HISTORY_FILE)
-        except FileNotFoundError:
-            return _hist_cache
-        if mtime == _hist_cache["mtime"]:
-            return _hist_cache
-        rows = []
-        try:
-            with open(HISTORY_FILE, encoding="utf-8") as f:
-                rows = list(csv.DictReader(f))
-        except Exception:
-            pass
-        wins = [r for r in rows if float(r["pnl_pct"]) > 0]
-        loss = [r for r in rows if float(r["pnl_pct"]) <= 0]
-        gw   = sum(float(r["pnl_pct"]) for r in wins)
-        gl   = abs(sum(float(r["pnl_pct"]) for r in loss))
-        stats = dict(
-            total    = len(rows), wins = len(wins), losses = len(loss),
-            win_rate = round(len(wins)/len(rows)*100, 1) if rows else 0.0,
-            avg_win  = round(gw/len(wins), 2) if wins else 0.0,
-            avg_loss = round(-gl/len(loss), 2) if loss else 0.0,
-            pf       = round(gw/gl, 2) if gl else 0.0,
-            cum_pct  = round(sum(float(r["pnl_pct"]) for r in rows), 2),
-        )
-        cum, dates, curve = 0.0, [], []
-        for r in rows:
-            cum += float(r["pnl_pct"])
-            curve.append(round(cum, 2))
-            dates.append(r["exit_date"][5:])
-        reasons: dict[str, int] = {}
-        for r in rows:
-            reasons[r["exit_reason"]] = reasons.get(r["exit_reason"], 0) + 1
-        _hist_cache.update(mtime=mtime, rows=rows, stats=stats,
-                           dates=dates, curve=curve, reasons=reasons)
-        return _hist_cache
-
-def enrich_positions(positions: list[dict]) -> list[dict]:
-    result = []
-    for p in positions:
-        live  = get_price(p["ticker"])
-        entry = p.get("entry", 0)
-        tp    = p.get("tp", 0)
-        sl    = p.get("sl", 0)
-        cur   = live["current"] if live else 0
-        pnl   = round((cur - entry)/entry*100, 2) if entry and cur else None
-        rng   = (tp - sl) if tp > sl else 1
-        prog  = max(0, min(100, round((cur - sl)/rng*100))) if cur else 50
-        result.append({**p, "current": cur, "pnl_pct": pnl, "progress": prog,
-                       "is_trailing": p.get("sl", 0) > p.get("sl_init", p.get("sl", 0)),
-                       "live_ok": live is not None})
-    return result
-
 def dashboard_sell(ticker: str, qty: int, name: str) -> dict:
     result = {"success": False, "order_no": "", "error": ""}
     if qty <= 0:
@@ -259,31 +216,6 @@ app = FastAPI()
 def auth(token: str):
     if token != DASHBOARD_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
-
-@app.get("/api/data")
-def api_data(token: str = ""):
-    auth(token)
-    hc        = get_history_cached()
-    positions = enrich_positions(load_positions())
-    recent    = [{"name": r["name"], "ticker": r["ticker"],
-                  "exit_date": r["exit_date"], "exit_reason": r["exit_reason"],
-                  "pnl_pct": float(r["pnl_pct"]),
-                  "entry_price": int(r.get("entry_price", 0)),
-                  "exit_price":  int(r.get("exit_price", 0)),
-                  "post_expire_pnl": r.get("post_expire_pnl", "")}
-                 for r in reversed(hc["rows"][-20:])]
-    return JSONResponse({
-        "now":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
-        "auto_trade":   read_env("AUTO_TRADE", "false").lower() == "true",
-        "kis_mode":     "실전투자" if read_env("KIS_MODE", "paper") == "real" else "모의투자",
-        "trade_amount": int(read_env("TRADE_AMOUNT_PER_STOCK", "200000")),
-        "stats":        hc["stats"],
-        "positions":    positions,
-        "history":      recent,
-        "equity_dates": hc["dates"],
-        "equity_curve": hc["curve"],
-        "reasons":      hc["reasons"],
-    })
 
 @app.post("/api/control")
 async def api_control(request: Request, token: str = ""):
@@ -426,6 +358,18 @@ def api_portfolio(token: str = ""):
         **snap, "total_return": ret,
     })
 
+_targets_cache: dict = {}   # key -> (expires_at, targets) — 표시용. 실거래(job_rebalance)는 항상 신규 계산.
+_TARGETS_TTL = 600          # 초 — FDR 일별 데이터라 자주 갱신 불필요
+def _cached_targets(key: str) -> list[dict]:
+    hit = _targets_cache.get(key)
+    if hit and time.time() < hit[0]:
+        return hit[1]
+    from scanner.strategy_rebalance import compute_target_weights
+    targets = compute_target_weights(key)
+    if targets:
+        _targets_cache[key] = (time.time() + _TARGETS_TTL, targets)
+    return targets
+
 @app.get("/api/strategies")
 def api_strategies(token: str = ""):
     auth(token)
@@ -454,8 +398,7 @@ async def api_set_strategy(request: Request, token: str = ""):
 def api_rebalance(token: str = ""):
     auth(token)
     try:
-        from scanner.strategy_rebalance import compute_target_weights
-        targets = compute_target_weights(read_env("STRATEGY_KEY", "kr_gem"))
+        targets = _cached_targets(read_env("STRATEGY_KEY", "kr_gem"))
     except Exception as e:
         return JSONResponse({"ok": False, "msg": f"전략 계산 실패: {e}"}, status_code=500)
     snap = _portfolio_snapshot()

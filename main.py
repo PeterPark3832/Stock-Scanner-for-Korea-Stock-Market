@@ -187,10 +187,20 @@ if __name__ == "__main__":
             if is_first_trading_day_of_month(now):
                 execute_rebalance()
             else:
-                log.info("  오늘은 이번달 첫 거래일이 아님 — kr_gem 리밸런싱 skip")
+                log.info("  오늘은 이번달 첫 거래일이 아님 — 리밸런싱 skip")
+
+        def _snapshot_equity_job() -> None:
+            d = datetime.now(KST).date()
+            if d.weekday() >= 5 or d in holidays.KR(years=d.year):
+                return  # 휴장일은 스냅샷 skip
+            from scanner.job_rebalance import snapshot_equity
+            snapshot_equity()
 
         schedule.every().day.at(REBALANCE_TIME, "Asia/Seoul").do(
-            lambda: _safe_run(_rebalance_if_first_trading_day, "월간 리밸런싱(kr_gem)")
+            lambda: _safe_run(_rebalance_if_first_trading_day, "월간 리밸런싱")
+        )
+        schedule.every().day.at("15:40", "Asia/Seoul").do(
+            lambda: _safe_run(_snapshot_equity_job, "장마감 평가금액 스냅샷")
         )
     else:
         schedule.every().day.at("09:10", "Asia/Seoul").do(lambda: _safe_run(job_morning_sl_check,  "갭오픈 SL 체크"))

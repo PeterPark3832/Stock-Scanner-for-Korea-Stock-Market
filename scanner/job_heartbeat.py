@@ -99,16 +99,15 @@ def _update_post_expire_pnl(now: datetime) -> None:
 
 
 def _heartbeat_rebalance(now: datetime) -> None:
-    """kr_gem 리밸런싱 모드: 일별 평가금액 스냅샷 + 경량 생존신호.
+    """리밸런싱 모드 09:00 경량 생존신호. 평가금액 스냅샷은 장마감(15:40) 별도 잡에서 기록.
     (눌림목 만료/TP/SL 매도 로직은 적용 안 함 — 월간 리밸런싱까지 보유 유지)"""
     from scanner.config import _KIS_MODE
-    from scanner.job_rebalance import snapshot_equity
-    snap = snapshot_equity()
+    from scanner.job_rebalance import _current_state, _total_value
+    holdings, cash = _current_state()
+    total  = _total_value(holdings, cash)
+    equity = total - cash
     with state._auto_trade_lock:
         do_trade = state._auto_trade_enabled
-    total = snap["total"] if snap else 0
-    equity = snap["equity"] if snap else 0
-    cash = snap["cash"] if snap else 0
     send_telegram(
         f"💚 *kr_gem 봇 정상 작동 중* ({now.strftime('%Y-%m-%d %H:%M')})\n"
         f"━━━━━━━━━━━━━━━━━━\n"

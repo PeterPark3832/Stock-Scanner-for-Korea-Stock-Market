@@ -773,7 +773,7 @@ input:checked+.slider:before{transform:translateX(20px)}
 .chart-toggle{display:inline-flex;background:var(--c-surface2);border-radius:8px;padding:2px}
 .ctg-btn{border:none;background:none;font-size:11.5px;font-weight:600;color:var(--c-text2);padding:4px 10px;border-radius:6px;cursor:pointer}
 .ctg-btn.active{background:var(--c-surface);color:var(--c-text);box-shadow:0 1px 2px rgba(0,0,0,.08)}
-.flow-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--c-border);font-size:13px}
+.flow-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:8px 0;border-bottom:1px solid var(--c-border);font-size:13px}
 .flow-row:last-child{border-bottom:none}
 .form-group{margin-bottom:14px}
 .form-label{font-size:12px;color:var(--c-text2);font-weight:600;margin-bottom:5px;display:block}
@@ -1036,6 +1036,7 @@ section.active{display:block}
         <div class="schedule-item"><span class="schedule-time">매월 1일</span><span class="schedule-desc">첫 거래일 09:05 자동 리밸런싱</span></div>
         <div class="schedule-item"><span class="schedule-time">수시</span><span class="schedule-desc">대시보드 '리밸런싱' 탭에서 수동 실행</span></div>
         <div class="schedule-item"><span class="schedule-time">09:00</span><span class="schedule-desc">Heartbeat — 봇 생존 확인</span></div>
+        <div class="schedule-item"><span class="schedule-time">15:40</span><span class="schedule-desc">장마감 평가금액 스냅샷</span></div>
       </div>
     </div>
   </div>
@@ -1173,11 +1174,9 @@ section.active{display:block}
   <div class="modal" style="max-width:460px">
     <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>입출금 기록</h3>
     <div style="font-size:12px;color:var(--c-text2);margin:-4px 0 12px">입금/출금을 기록하면 수익률(TWR)·KOSPI 알파 계산에서 자동 제외됩니다. 입금은 +, 출금은 − 금액.</div>
-    <div style="display:flex;gap:8px;align-items:flex-end">
-      <div style="flex:0 0 130px"><label class="form-label">날짜</label><input type="date" id="cfDate" class="form-input"></div>
-      <div style="flex:1"><label class="form-label">금액 (입금+ / 출금−)</label><input type="number" id="cfAmount" class="form-input" placeholder="예: 500000 또는 -100000"></div>
-      <button class="btn btn-primary" onclick="addCashflow()">추가</button>
-    </div>
+    <div class="form-group"><label class="form-label">날짜</label><input type="date" id="cfDate" class="form-input"></div>
+    <div class="form-group"><label class="form-label">금액 (입금 +, 출금 −)</label><input type="number" id="cfAmount" class="form-input" placeholder="예: 500000 또는 -100000"></div>
+    <button class="btn btn-primary" style="width:100%" onclick="addCashflow()">추가</button>
     <div id="cfList" style="margin-top:14px;max-height:34vh;overflow-y:auto"></div>
     <div style="display:flex;gap:8px;margin-top:14px">
       <button class="btn btn-outline" style="flex:1" onclick="closeModal('cashflowModal')">닫기</button>

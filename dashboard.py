@@ -777,8 +777,11 @@ input:checked+.slider:before{transform:translateX(20px)}
 .flow-row:last-child{border-bottom:none}
 .form-group{margin-bottom:14px}
 .form-label{font-size:12px;color:var(--c-text2);font-weight:600;margin-bottom:5px;display:block}
-.form-input{width:100%;padding:9px 12px;border:1.5px solid var(--c-border);border-radius:8px;font-size:14px;outline:none;transition:border .15s;background:var(--c-surface);color:var(--c-text)}
+.form-input{width:100%;height:42px;padding:9px 12px;border:1.5px solid var(--c-border);border-radius:8px;font-size:14px;line-height:1.4;font-family:inherit;outline:none;transition:border .15s;background:var(--c-surface);color:var(--c-text);-webkit-appearance:none;appearance:none}
 .form-input:focus{border-color:var(--c-primary)}
+input.form-input[type=date]{display:block}
+input.form-input[type=date]::-webkit-date-and-time-value{text-align:left}
+input.form-input[type=date]::-webkit-calendar-picker-indicator{margin-left:auto}
 
 /* Chart */
 .chart-wrap{position:relative;height:220px}

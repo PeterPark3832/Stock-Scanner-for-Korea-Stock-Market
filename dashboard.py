@@ -308,6 +308,22 @@ def _equity_snapshots() -> list[dict]:
     except Exception:
         return []
 
+CASHFLOW_FILE = os.path.join(BASE_DIR, "cash_flows.json")
+_flow_lock = threading.Lock()
+def _cash_flows() -> list[dict]:
+    if not os.path.exists(CASHFLOW_FILE):
+        return []
+    try:
+        with open(CASHFLOW_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _save_cash_flows(flows: list[dict]) -> None:
+    with _flow_lock:
+        with open(CASHFLOW_FILE, "w", encoding="utf-8") as f:
+            json.dump(flows, f, ensure_ascii=False, indent=2)
+
 _bench_cache = {"key": None, "at": 0, "series": None}
 def _benchmark_series(start: str):
     """KOSPI200(069500) 일별 종가 시계열 {date: close}. FDR, 1시간 캐시."""
@@ -369,6 +385,38 @@ def _cached_targets(key: str) -> list[dict]:
     if targets:
         _targets_cache[key] = (time.time() + _TARGETS_TTL, targets)
     return targets
+
+@app.get("/api/cashflows")
+def api_cashflows(token: str = ""):
+    auth(token)
+    flows = sorted(_cash_flows(), key=lambda f: f.get("date", ""), reverse=True)
+    return JSONResponse({"flows": flows})
+
+@app.post("/api/cashflow")
+async def api_cashflow(request: Request, token: str = ""):
+    auth(token)
+    body = await request.json()
+    action = body.get("action", "add")
+    flows = _cash_flows()
+    if action == "delete":
+        fid = body.get("id", "")
+        flows = [f for f in flows if f.get("id") != fid]
+        _save_cash_flows(flows)
+        return JSONResponse({"ok": True, "msg": "입출금 기록 삭제됨"})
+    # add
+    d = (body.get("date") or "").strip()
+    try:
+        amount = int(body.get("amount", 0))
+    except (TypeError, ValueError):
+        return JSONResponse({"ok": False, "msg": "금액은 숫자여야 합니다"}, status_code=400)
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", d):
+        return JSONResponse({"ok": False, "msg": "날짜 형식은 YYYY-MM-DD"}, status_code=400)
+    if amount == 0:
+        return JSONResponse({"ok": False, "msg": "금액을 입력하세요(입금 +, 출금 -)"}, status_code=400)
+    flows.append({"id": f"{d}_{int(time.time()*1000)}", "date": d, "amount": amount})
+    _save_cash_flows(flows)
+    kind = "입금" if amount > 0 else "출금"
+    return JSONResponse({"ok": True, "msg": f"{d} {kind} {abs(amount):,}원 기록됨"})
 
 @app.get("/api/strategies")
 def api_strategies(token: str = ""):
@@ -444,24 +492,45 @@ def api_rebalance_history(token: str = ""):
     full_dates = sorted(points)
     totals = [points[d] for d in full_dates]
     base = totals[0] if totals else 0
-    # 벤치마크(KOSPI200) — 시작 평가금액과 동일 금액을 KOSPI200에 넣었다고 가정해 원화로 환산
-    bench_value = []
-    if full_dates and base:
-        bs = _benchmark_series(full_dates[0])
-        if bs:
-            keys = sorted(bs)
-            def closest(d):
-                prev = [k for k in keys if k <= d]
-                return bs[prev[-1]] if prev else None
-            raw = [closest(d) for d in full_dates]
-            b0 = next((x for x in raw if x), None)
-            if b0:
-                bench_value = [int(base * x / b0) if x else None for x in raw]
+    # 입출금 원장 (날짜별 순입출금)
+    flows = {}
+    for f in _cash_flows():
+        flows[f.get("date")] = flows.get(f.get("date"), 0) + f.get("amount", 0)
+    # 벤치마크(KOSPI200) 종가 정렬
+    raw = []
+    bs = _benchmark_series(full_dates[0]) if full_dates else {}
+    if bs:
+        keys = sorted(bs)
+        def closest(d):
+            prev = [k for k in keys if k <= d]
+            return bs[prev[-1]] if prev else None
+        raw = [closest(d) for d in full_dates]
+    b0 = next((x for x in raw if x), None) if raw else None
+    # 평가금액 비교용(원): 시작금액 동일 KOSPI200 환산
+    bench_value = [int(base * x / b0) if (x and b0) else None for x in raw] if (base and b0) else []
+    # 일별 체이닝 TWR(입출금 중립) + KOSPI200 지수(둘 다 시작 100)
+    twr_index, kospi_index = [], []
+    if full_dates:
+        idx = 100.0
+        twr_index = [100.0]
+        for i in range(1, len(full_dates)):
+            v_prev, v_now = totals[i - 1], totals[i]
+            fl = flows.get(full_dates[i], 0)
+            r = ((v_now - fl) / v_prev - 1) if v_prev > 0 else 0.0
+            idx *= (1 + r)
+            twr_index.append(round(idx, 2))
+        if b0:
+            kospi_index = [round(100 * x / b0, 2) if x else None for x in raw]
+    twr_pct   = round(twr_index[-1] - 100, 2) if twr_index else 0.0
+    kospi_pct = round(kospi_index[-1] - 100, 2) if (kospi_index and kospi_index[-1] is not None) else 0.0
+    alpha     = round(twr_pct - kospi_pct, 2)
     labels = [d[5:] for d in full_dates]  # MM-DD
     exec_dates = [e["ts"][:10] for e in events if e.get("ts")]
     return JSONResponse({"events": list(reversed(events)),
-                         "dates": labels, "value_curve": totals,
-                         "benchmark_value": bench_value, "exec_dates": exec_dates})
+                         "dates": labels, "value_curve": totals, "benchmark_value": bench_value,
+                         "twr_index": twr_index, "kospi_index": kospi_index,
+                         "twr_pct": twr_pct, "kospi_pct": kospi_pct, "alpha": alpha,
+                         "exec_dates": exec_dates})
 
 @app.post("/api/rebalance/execute")
 def api_rebalance_execute(token: str = ""):
@@ -701,6 +770,11 @@ input:checked+.slider:before{transform:translateX(20px)}
 .strat-opt{border:1px solid var(--c-border);border-radius:10px;padding:12px 14px;cursor:pointer;transition:border-color .12s,background .12s}
 .strat-opt:hover{border-color:var(--c-primary)}
 .strat-opt.sel{border-color:var(--c-primary);background:rgba(0,200,5,.06);box-shadow:inset 0 0 0 1px var(--c-primary)}
+.chart-toggle{display:inline-flex;background:var(--c-surface2);border-radius:8px;padding:2px}
+.ctg-btn{border:none;background:none;font-size:11.5px;font-weight:600;color:var(--c-text2);padding:4px 10px;border-radius:6px;cursor:pointer}
+.ctg-btn.active{background:var(--c-surface);color:var(--c-text);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.flow-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--c-border);font-size:13px}
+.flow-row:last-child{border-bottom:none}
 .form-group{margin-bottom:14px}
 .form-label{font-size:12px;color:var(--c-text2);font-weight:600;margin-bottom:5px;display:block}
 .form-input{width:100%;padding:9px 12px;border:1.5px solid var(--c-border);border-radius:8px;font-size:14px;outline:none;transition:border .15s;background:var(--c-surface);color:var(--c-text)}
@@ -891,10 +965,18 @@ section.active{display:block}
   <!-- Portfolio chart -->
   <div class="card" style="margin-bottom:20px;padding:18px 20px">
     <div class="section-hd" style="margin-bottom:6px">
-      <div class="card-title" style="margin-bottom:0">평가금액 추이</div>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div class="card-title" style="margin-bottom:0" id="chartTitle">평가금액 추이</div>
+        <div class="chart-toggle">
+          <button class="ctg-btn active" id="ctgValue" onclick="setChartMode('value')">평가금액</button>
+          <button class="ctg-btn" id="ctgTwr" onclick="setChartMode('twr')">KOSPI200 비교</button>
+        </div>
+      </div>
       <span class="refresh-ts" id="eqTs"></span>
     </div>
+    <div id="alphaLine" style="display:none;font-size:13px;margin:2px 0 8px"></div>
     <div class="chart-wrap" style="height:260px"><canvas id="equityChart"></canvas></div>
+    <button class="btn btn-outline btn-sm" style="margin-top:12px" onclick="openCashflowModal()">입출금 기록</button>
   </div>
 
   <!-- Secondary stats -->
@@ -1086,6 +1168,23 @@ section.active{display:block}
   </div>
 </div>
 
+<!-- Cashflow Modal -->
+<div class="modal-bg" id="cashflowModal">
+  <div class="modal" style="max-width:460px">
+    <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>입출금 기록</h3>
+    <div style="font-size:12px;color:var(--c-text2);margin:-4px 0 12px">입금/출금을 기록하면 수익률(TWR)·KOSPI 알파 계산에서 자동 제외됩니다. 입금은 +, 출금은 − 금액.</div>
+    <div style="display:flex;gap:8px;align-items:flex-end">
+      <div style="flex:0 0 130px"><label class="form-label">날짜</label><input type="date" id="cfDate" class="form-input"></div>
+      <div style="flex:1"><label class="form-label">금액 (입금+ / 출금−)</label><input type="number" id="cfAmount" class="form-input" placeholder="예: 500000 또는 -100000"></div>
+      <button class="btn btn-primary" onclick="addCashflow()">추가</button>
+    </div>
+    <div id="cfList" style="margin-top:14px;max-height:34vh;overflow-y:auto"></div>
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-outline" style="flex:1" onclick="closeModal('cashflowModal')">닫기</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1096,6 +1195,8 @@ let NEXT_REBAL = "";          // 다음 리밸런싱 예정일 (YYYY-MM-DD)
 let STRATEGIES_CACHE = [];    // 전략 목록
 let CUR_STRATEGY = "";        // 현재 활성 전략 key
 let SEL_STRATEGY = "";        // 모달에서 선택 중인 전략 key
+let HISTORY_DATA = null;      // 최근 /api/rebalance/history 응답 (차트 토글용)
+let CHART_MODE = "value";     // "value"(평가금액 원) | "twr"(KOSPI200 비교 %)
 const $ = s => document.querySelector(s);
 const $$ = s => document.querySelectorAll(s);
 
@@ -1199,7 +1300,7 @@ function loadRebalance() {
   }).catch(() => toast("❌ 리밸런싱 데이터 조회 실패"));
 }
 function confirmRebalance() {
-  if (!confirm("지금 kr_gem 리밸런싱을 실행할까요?\n실행 중인 봇이 매도/매수 주문을 즉시 전송합니다.")) return;
+  if (!confirm("지금 리밸런싱을 실행할까요?\n실행 중인 봇이 현재 전략 기준으로 매도/매수 주문을 즉시 전송합니다.")) return;
   fetch("/api/rebalance/execute?token=" + TOKEN, {method: "POST"}).then(r => r.json()).then(d => {
     toast(d.ok ? "✅ " + d.msg : "❌ " + d.msg);
   }).catch(() => toast("❌ 리밸런싱 요청 실패"));
@@ -1435,13 +1536,99 @@ function loadPortfolio() {
   fetch("/api/rebalance/history?token=" + TOKEN)
     .then(r => r.json())
     .then(d => {
-      renderReturnCurve(d.dates || [], d.value_curve || [], d.benchmark_value || []);
+      HISTORY_DATA = d;
       const n = (d.dates ? d.dates.length : 0);
       $("#eqTs").textContent = n ? n + "일 추이" : "데이터 없음";
+      renderChart();
       REBAL_EXEC = new Set(d.exec_dates || []);
       renderCalendar();
     })
     .catch(() => {});
+}
+
+// ── 차트 모드 토글 (평가금액 원 ↔ KOSPI200 비교 %) ───────────────
+function setChartMode(mode) {
+  CHART_MODE = mode;
+  $("#ctgValue").classList.toggle("active", mode === "value");
+  $("#ctgTwr").classList.toggle("active", mode === "twr");
+  $("#chartTitle").textContent = mode === "twr" ? "내 전략 vs KOSPI200 (입출금 보정 수익률)" : "평가금액 추이";
+  renderChart();
+}
+function renderChart() {
+  const d = HISTORY_DATA; if (!d) return;
+  const alpha = $("#alphaLine");
+  if (CHART_MODE === "twr") {
+    renderTwrCurve(d.dates || [], d.twr_index || [], d.kospi_index || []);
+    const a = d.alpha || 0, t = d.twr_pct || 0, k = d.kospi_pct || 0;
+    const col = a >= 0 ? "var(--c-up)" : "var(--c-down)";
+    alpha.style.display = "block";
+    alpha.innerHTML = `전략 <b style="color:${t>=0?'var(--c-up)':'var(--c-down)'}">${t>=0?'+':''}${t.toFixed(2)}%</b>`
+      + ` · KOSPI200 <b>${k>=0?'+':''}${k.toFixed(2)}%</b>`
+      + ` · 알파 <b style="color:${col}">${a>=0?'+':''}${a.toFixed(2)}%p</b>`;
+  } else {
+    renderReturnCurve(d.dates || [], d.value_curve || [], d.benchmark_value || []);
+    alpha.style.display = "none";
+  }
+}
+function renderTwrCurve(dates, twr, kospi) {
+  // value chart와 동일 canvas 공유 — equityChart 파괴 후 재생성
+  const canvas = $("#equityChart"); const ctx = canvas.getContext("2d");
+  if (equityChart) { equityChart.destroy(); equityChart = null; }
+  const up = (twr.length ? twr[twr.length-1] : 100) >= 100;
+  const line = up ? "#00C805" : "#F0463A";
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
+  grad.addColorStop(0, up ? "rgba(0,200,5,.16)" : "rgba(240,70,58,.16)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  const ds = [{label:"내 전략(TWR)", data:twr, borderColor:line, backgroundColor:grad,
+    fill:true, tension:0.25, pointRadius: dates.length<=12?2.5:0, pointHoverRadius:4, borderWidth:2}];
+  if (kospi && kospi.some(v=>v!=null)) ds.push({label:"KOSPI200", data:kospi,
+    borderColor:"#9AA0A6", backgroundColor:"transparent", fill:false, tension:0.25,
+    pointRadius:0, pointHoverRadius:4, borderWidth:1.5, borderDash:[5,4], spanGaps:true});
+  equityChart = new Chart(ctx, {type:"line", data:{labels:dates, datasets:ds}, options:{
+    responsive:true, maintainAspectRatio:false, interaction:{mode:"index",intersect:false},
+    plugins:{legend:{display:true, position:"top", align:"end",
+      labels:{boxWidth:12, boxHeight:2, font:{size:11}, color:"#6F7780"}},
+      tooltip:{callbacks:{label:item=>" "+item.dataset.label+": "+(item.raw==null?"-":((item.raw-100>=0?"+":"")+(item.raw-100).toFixed(2)+"%"))}}},
+    scales:{x:{ticks:{maxTicksLimit:8,font:{size:11},color:"#94a3b8"},grid:{display:false}},
+      y:{ticks:{font:{size:11},color:"#94a3b8",callback:v=>(v-100>=0?"+":"")+(v-100).toFixed(0)+"%"},
+         grid:{color:ctx2=>ctx2.tick.value===100?"rgba(15,23,42,.25)":"#f0f4f8", lineWidth:ctx2=>ctx2.tick.value===100?1.5:1}}}
+  }});
+}
+
+// ── 입출금 기록 ─────────────────────────────────────────────────
+function openCashflowModal() {
+  const t = new Date(); $("#cfDate").value = `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+  $("#cfAmount").value = "";
+  loadCashflows();
+  $("#cashflowModal").classList.add("open");
+}
+function loadCashflows() {
+  fetch("/api/cashflows?token=" + TOKEN).then(r=>r.json()).then(d=>{
+    const flows = d.flows || [];
+    $("#cfList").innerHTML = flows.length ? flows.map(f=>{
+      const dep = f.amount >= 0;
+      return `<div class="flow-row">
+        <span>${f.date} <span class="badge ${dep?'badge-green':'badge-red'}" style="font-size:10px">${dep?'입금':'출금'}</span></span>
+        <span style="display:flex;align-items:center;gap:10px"><b style="color:${dep?'var(--c-up)':'var(--c-down)'}">${dep?'+':''}${f.amount.toLocaleString()}원</b>
+        <button class="btn btn-outline btn-sm" onclick="deleteCashflow('${f.id}')">삭제</button></span>
+      </div>`;
+    }).join("") : '<div style="color:var(--c-text2);font-size:13px;padding:8px 0">기록된 입출금이 없습니다</div>';
+  }).catch(()=>{});
+}
+function addCashflow() {
+  const date = $("#cfDate").value, amount = parseInt($("#cfAmount").value);
+  if (!date || !amount) { toast("날짜와 금액(입금+/출금−)을 입력하세요"); return; }
+  fetch("/api/cashflow?token=" + TOKEN, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({action:"add", date, amount})
+  }).then(r=>r.json()).then(d=>{
+    toast(d.ok ? "✅ "+d.msg : "❌ "+d.msg);
+    if (d.ok) { $("#cfAmount").value=""; loadCashflows(); loadPortfolio(); }
+  }).catch(()=>toast("❌ 입출금 기록 실패"));
+}
+function deleteCashflow(id) {
+  fetch("/api/cashflow?token=" + TOKEN, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({action:"delete", id})
+  }).then(r=>r.json()).then(d=>{ toast(d.ok?"✅ "+d.msg:"❌ "+d.msg); if(d.ok){loadCashflows(); loadPortfolio();} }).catch(()=>{});
 }
 
 // ── Logs ───────────────────────────────────────────────────────

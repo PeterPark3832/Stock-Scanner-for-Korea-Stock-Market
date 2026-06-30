@@ -28,3 +28,8 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# 대시보드 개인 데이터(자동생성)
+cash_flows.json
+equity_snapshots.json
+rebalance_log.json

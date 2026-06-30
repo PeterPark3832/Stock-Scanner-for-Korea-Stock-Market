@@ -668,6 +668,14 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Satoshi','Inter',sy
 .reason-bar-fill{height:100%;border-radius:4px;transition:width .4s ease}
 .reason-bar-meta{font-size:11.5px;color:var(--c-text2);white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
 .reason-bar-pct{font-weight:700;color:var(--c-text)}
+/* 자산 배분: 이름·% 윗줄, 막대 아랫줄 (긴 종목명도 겹치지 않게) */
+#allocRow{gap:14px}
+.alloc-row{display:flex;flex-direction:column;gap:5px}
+.alloc-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.alloc-name{font-size:12.5px;color:var(--c-text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.alloc-pct{font-size:12.5px;color:var(--c-text);font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
+.alloc-track{background:var(--c-border);border-radius:4px;height:8px;overflow:hidden}
+.alloc-fill{height:100%;border-radius:4px;transition:width .4s ease}
 @media(max-width:640px){
   .reason-bar-row{grid-template-columns:72px 1fr 56px}
   .reason-bar-label{font-size:11px}
@@ -1376,12 +1384,14 @@ function renderAllocation(holdings, cashWeight) {
   }
   items.sort((a, b) => b.pct - a.pct);
   row.innerHTML = items.map((it, i) => `
-    <div class="reason-bar-row">
-      <div class="reason-bar-label">${it.label}</div>
-      <div class="reason-bar-track">
-        <div class="reason-bar-fill" style="width:${Math.min(100,it.pct)}%;background:${it.label==='현금'?'#94a3b8':ALLOC_COLORS[i%ALLOC_COLORS.length]}"></div>
+    <div class="alloc-row">
+      <div class="alloc-top">
+        <span class="alloc-name" title="${it.label}">${it.label}</span>
+        <span class="alloc-pct">${it.pct.toFixed(1)}%</span>
       </div>
-      <div class="reason-bar-meta"><span class="reason-bar-pct">${it.pct.toFixed(1)}%</span></div>
+      <div class="alloc-track">
+        <div class="alloc-fill" style="width:${Math.min(100,it.pct)}%;background:${it.label==='현금'?'#94a3b8':ALLOC_COLORS[i%ALLOC_COLORS.length]}"></div>
+      </div>
     </div>`).join("");
 }
 

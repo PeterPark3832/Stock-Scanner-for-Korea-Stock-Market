@@ -509,14 +509,42 @@ def api_rebalance_history(token: str = ""):
     # 평가금액 비교용(원): 시작금액 동일 KOSPI200 환산
     bench_value = [int(base * x / b0) if (x and b0) else None for x in raw] if (base and b0) else []
     # 일별 체이닝 TWR(입출금 중립) + KOSPI200 지수(둘 다 시작 100)
+    # 입출금 타이밍 자동 감지:
+    #   same-day: 당일 V 스냅샷에 CF 반영됨 → (V_now - CF) / V_prev - 1
+    #   next-day: 당일 V에 미반영, 다음날 V에 반영됨 → V_now / (V_prev + CF_prev) - 1
     twr_index, kospi_index = [], []
     if full_dates:
+        date_to_idx = {d: i for i, d in enumerate(full_dates)}
+        end_cf: dict = {}   # 당일 V에 이미 포함된 CF
+        start_cf: dict = {} # 다음날 V에 반영되는 CF (전날 날짜를 키로 저장)
+
+        for date_str, cf in flows.items():
+            if date_str in date_to_idx:
+                di = date_to_idx[date_str]
+                if di == 0:
+                    end_cf[date_str] = end_cf.get(date_str, 0) + cf
+                else:
+                    # V가 CF의 절반 이상 뛰었으면 same-day, 아니면 next-day
+                    v_jump = totals[di] - totals[di - 1]
+                    if v_jump >= cf * 0.5:
+                        end_cf[date_str] = end_cf.get(date_str, 0) + cf
+                    else:
+                        start_cf[date_str] = start_cf.get(date_str, 0) + cf
+            else:
+                # 해당 날짜 스냅샷 없음 → 직전 스냅샷을 키로 next-day 처리
+                prev_snaps = [d for d in full_dates if d <= date_str]
+                if prev_snaps:
+                    start_cf[prev_snaps[-1]] = start_cf.get(prev_snaps[-1], 0) + cf
+
         idx = 100.0
         twr_index = [100.0]
         for i in range(1, len(full_dates)):
             v_prev, v_now = totals[i - 1], totals[i]
-            fl = flows.get(full_dates[i], 0)
-            r = ((v_now - fl) / v_prev - 1) if v_prev > 0 else 0.0
+            s_cf = start_cf.get(full_dates[i - 1], 0)  # 전날 CF → 오늘 V에 포함
+            e_cf = end_cf.get(full_dates[i], 0)          # 오늘 CF → 오늘 V에 이미 포함
+            denom = v_prev + s_cf
+            numer = v_now - e_cf
+            r = (numer / denom - 1) if denom > 0 else 0.0
             idx *= (1 + r)
             twr_index.append(round(idx, 2))
         if b0:

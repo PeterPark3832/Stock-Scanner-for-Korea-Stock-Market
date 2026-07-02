@@ -599,7 +599,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Scanner v5.1</title>
 <link rel="preconnect" href="https://api.fontshare.com" crossorigin>
 <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap" rel="stylesheet">
@@ -702,12 +702,6 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Satoshi','Inter',sy
 
 /* Reason bar chart */
 .reason-bar-list{display:flex;flex-direction:column;gap:8px}
-.reason-bar-row{display:grid;grid-template-columns:88px 1fr 64px;align-items:center;gap:10px}
-.reason-bar-label{font-size:12px;color:var(--c-text2);font-weight:500;white-space:nowrap;text-align:right}
-.reason-bar-track{background:var(--c-border);border-radius:4px;height:8px;overflow:hidden}
-.reason-bar-fill{height:100%;border-radius:4px;transition:width .4s ease}
-.reason-bar-meta{font-size:11.5px;color:var(--c-text2);white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums}
-.reason-bar-pct{font-weight:700;color:var(--c-text)}
 /* 자산 배분: 이름·% 윗줄, 막대 아랫줄 (긴 종목명도 겹치지 않게) */
 #allocRow{gap:14px}
 .alloc-row{display:flex;flex-direction:column;gap:5px}
@@ -716,10 +710,6 @@ body{background:var(--c-bg);color:var(--c-text);font-family:'Satoshi','Inter',sy
 .alloc-pct{font-size:12.5px;color:var(--c-text);font-weight:700;white-space:nowrap;font-variant-numeric:tabular-nums}
 .alloc-track{background:var(--c-border);border-radius:4px;height:8px;overflow:hidden}
 .alloc-fill{height:100%;border-radius:4px;transition:width .4s ease}
-@media(max-width:640px){
-  .reason-bar-row{grid-template-columns:72px 1fr 56px}
-  .reason-bar-label{font-size:11px}
-}
 
 /* Mini calendar */
 .cal-month{font-size:14px;font-weight:700;text-align:center;margin-bottom:10px}
@@ -752,17 +742,9 @@ table{width:100%;border-collapse:collapse;font-size:13px}
 thead th{background:var(--c-bg);color:var(--c-text2);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:10px 14px;text-align:left;border-bottom:2px solid var(--c-border);white-space:nowrap}
 tbody tr{border-bottom:1px solid var(--c-border);transition:background .12s}
 tbody tr:nth-child(even){background:var(--c-surface2)}
-tbody tr:hover{background:rgba(16,185,129,.04)}
+tbody tr:hover{background:rgba(0,200,5,.05)}
 tbody tr:last-child{border-bottom:none}
 td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
-.tbl-name{max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.date-short{display:none}
-
-/* Progress bar */
-.prog-bar{height:5px;border-radius:3px;background:var(--c-border);overflow:hidden;width:80px;display:inline-block;vertical-align:middle}
-.prog-fill{height:100%;border-radius:3px;background:var(--c-primary);transition:width .3s}
-.prog-fill.danger{background:var(--c-danger)}
-.prog-fill.warn{background:var(--c-warn)}
 
 /* Badges */
 .badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:6px;font-size:11.5px;font-weight:600;line-height:1.4;white-space:nowrap}
@@ -770,7 +752,6 @@ td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
 .badge-red{background:#fee2e2;color:#dc2626}
 .badge-blue{background:#dbeafe;color:#1d4ed8}
 .badge-gray{background:#f1f5f9;color:#64748b}
-.badge-yellow{background:#fef3c7;color:#92400e}
 
 /* Buttons */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all .15s;white-space:nowrap}
@@ -778,8 +759,6 @@ td{padding:11px 14px;vertical-align:middle;white-space:nowrap}
 .btn-primary:hover{background:var(--c-primary-dk);color:#fff}
 .btn-outline{background:transparent;border:1.5px solid var(--c-border);color:var(--c-text)}
 .btn-outline:hover{background:var(--c-bg)}
-.btn-danger{background:#fee2e2;color:#dc2626;border:1.5px solid #fecaca}
-.btn-danger:hover{background:#fecaca}
 .btn-sm{padding:5px 11px;font-size:12px}
 
 /* Toggle switch */
@@ -827,26 +806,12 @@ section.active{display:block}
 .ctrl-strip{display:flex;align-items:center;gap:0;flex-wrap:wrap;padding:0;background:var(--c-surface);border-radius:12px;box-shadow:0 1px 2px rgba(0,0,0,.04);border:1px solid var(--c-border);margin-bottom:24px;font-size:13px;overflow:hidden}
 .ctrl-group{display:flex;align-items:center;gap:10px;padding:10px 16px}
 .ctrl-group-state{flex:1;gap:12px}
-.ctrl-group-action{background:var(--c-bg);border-left:1px solid var(--c-border);gap:8px}
 .ctrl-divider{width:1px;height:22px;background:var(--c-border);flex-shrink:0}
 .ctrl-item{display:flex;align-items:center;gap:7px}
 .ctrl-spacer{flex:1}
 
-/* Filter bars */
-.filter-bar-row{display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--c-border);font-size:12.5px}
-.filter-bar-row:last-child{border-bottom:none}
-.filter-name{min-width:130px;color:var(--c-text2);flex-shrink:0}
-.filter-bar-bg{flex:1;height:7px;background:var(--c-bg);border-radius:4px;overflow:hidden}
-.filter-bar-fill{height:100%;border-radius:4px;background:var(--c-primary);transition:width .4s}
-.filter-count{min-width:40px;text-align:right;font-weight:600;color:var(--c-text)}
-
 /* Log viewer */
 #logBox{background:#1e2330;border-radius:10px;padding:14px;font-family:'Courier New',monospace;font-size:12px;height:380px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#a8b4cb;line-height:1.5}
-
-/* Backtest tabs */
-.bt-tabs{display:flex;gap:6px}
-.bt-tab{padding:6px 14px;border-radius:7px;font-size:12.5px;font-weight:600;color:var(--c-text2);cursor:pointer;border:1.5px solid var(--c-border);background:none;transition:all .15s}
-.bt-tab.active{border-color:var(--c-primary);color:var(--c-primary);background:#E8F9F2}
 
 /* Toast */
 .toast{position:fixed;top:20px;right:20px;background:#0A0B0D;color:#fff;padding:12px 16px;border-radius:12px;font-size:13px;font-weight:500;z-index:9999;opacity:0;transform:translateY(-8px);transition:all .25s;pointer-events:none;max-width:320px;border-left:3px solid var(--c-text2)}
@@ -884,20 +849,15 @@ section.active{display:block}
   .mobile-nav{display:block}
   .kpi-grid{grid-template-columns:repeat(2,1fr);gap:10px}
   .kpi-card{padding:16px 16px 14px;border-radius:14px}
-  .kpi-value{font-size:24px;letter-spacing:-.4px}
+  .kpi-value{font-size:20px;letter-spacing:-.4px}
   .kpi-label{font-size:9.5px;margin-bottom:7px;letter-spacing:.5px}
   .grid-bot{grid-template-columns:1fr}
   .ctrl-strip{font-size:12px;flex-direction:column;gap:0}
   .ctrl-group{width:100%;box-sizing:border-box;padding:8px 10px;gap:6px}
-  .ctrl-group-action{border-left:none;border-top:1px solid var(--c-border)}
   .ctrl-strip .ctrl-divider{display:none}
   .chart-wrap{height:180px}
   .btn-sm{padding:4px 8px;font-size:11.5px}
   .kpi-sub{white-space:normal;overflow:visible;text-overflow:unset;font-size:10.5px}
-  .kpi-value{font-size:20px}
-  .date-short{display:inline}
-  .date-full{display:none}
-  .tbl-name{max-width:100px}
   /* 리밸런싱 테이블: 현재 비중(3)·현재가(4) 숨김 — 종목·목표비중·보유수량·필요매매만 표시 */
   #sec-rebalance thead th:nth-child(3),
   #sec-rebalance thead th:nth-child(4),
@@ -920,7 +880,7 @@ section.active{display:block}
     </div>
     <div>
       <div class="sb-logo-text">Scanner v5.1</div>
-      <div class="sb-logo-sub">kr_gem 멀티에셋</div>
+      <div class="sb-logo-sub" id="sbStrategySub">멀티에셋 리밸런싱</div>
     </div>
   </div>
 
@@ -966,7 +926,7 @@ section.active{display:block}
     <div class="ctrl-divider"></div>
     <div class="ctrl-item">
       <span style="color:var(--c-text2)">자동매매</span>
-      <label class="toggle"><input type="checkbox" id="atToggle" onchange="toggleAutoTrade(this.checked)"><span class="slider"></span></label>
+      <label class="toggle"><input type="checkbox" id="atToggle" aria-label="자동매매 켜기/끄기" onchange="toggleAutoTrade(this.checked)"><span class="slider"></span></label>
       <span id="atLabel" style="font-size:12px;font-weight:700">OFF</span>
     </div>
     <div class="ctrl-spacer"></div>
@@ -1033,7 +993,7 @@ section.active{display:block}
           <svg viewBox="0 0 26 26"><circle cx="13" cy="9" r="5"/><path d="M4 22c0-4.418 4.03-8 9-8s9 3.582 9 8"/></svg>
         </div>
         <div>
-          <div class="bot-name">kr_gem 리밸런싱 봇</div>
+          <div class="bot-name" id="botName">리밸런싱 봇</div>
           <div class="bot-role" id="botRoleLabel">시스템 연결 중...</div>
         </div>
       </div>
@@ -1094,10 +1054,10 @@ section.active{display:block}
     </div>
     <button class="btn btn-outline btn-sm" onclick="openStrategyModal()">전략 변경</button>
   </div>
-  <div class="kpi-grid" style="margin-bottom:16px">
+  <div class="kpi-grid" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
     <div class="kpi-card"><div class="kpi-label">총 평가금액</div><div class="kpi-value neutral" id="rbTotal">--</div></div>
     <div class="kpi-card"><div class="kpi-label">주문가능 현금</div><div class="kpi-value neutral" id="rbCash">--</div></div>
-    <div class="kpi-card"><div class="kpi-label">최소 필요금액</div><div class="kpi-value neutral" id="rbMin">--</div><div class="kpi-sub">3종목 각 1주 이상 매수 기준</div></div>
+    <div class="kpi-card"><div class="kpi-label">최소 필요금액</div><div class="kpi-value neutral" id="rbMin">--</div><div class="kpi-sub">목표 종목 각 1주 이상 매수 기준</div></div>
   </div>
   <div id="rbWarn" style="display:none;margin-bottom:16px;padding:12px 14px;border-radius:10px;background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:13px"></div>
   <div class="card">
@@ -1168,28 +1128,9 @@ section.active{display:block}
 </div>
 </nav>
 
-<!-- Sell Modal -->
-<div class="modal-bg" id="sellModal">
-  <div class="modal">
-    <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 16.5v.75A.75.75 0 0 0 3.75 18h12.5a.75.75 0 0 0 .75-.75v-.75M10 3v10.5m0 0-3-3m3 3 3-3"/></svg>수동 청산</h3>
-    <div class="form-group">
-      <label class="form-label">종목</label>
-      <input type="text" id="sellName" class="form-input" readonly>
-    </div>
-    <div class="form-group">
-      <label class="form-label">수량 <span style="font-weight:400">(보유: <span id="sellQtyHeld"></span>주)</span></label>
-      <input type="number" id="sellQty" class="form-input" min="1">
-    </div>
-    <div style="display:flex;gap:8px;margin-top:6px">
-      <button class="btn btn-danger" style="flex:1" onclick="confirmSell()">청산 실행</button>
-      <button class="btn btn-outline" style="flex:1" onclick="closeModal('sellModal')">취소</button>
-    </div>
-  </div>
-</div>
-
 <!-- Strategy Modal -->
 <div class="modal-bg" id="strategyModal">
-  <div class="modal" style="max-width:520px">
+  <div class="modal" style="width:520px;max-width:100%">
     <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h14M3 10h14M3 14h9"/></svg>리밸런싱 전략 선택</h3>
     <div style="font-size:12px;color:var(--c-text2);margin:-4px 0 12px">선택한 전략은 다음 리밸런싱(월간 자동 또는 수동 실행)부터 적용됩니다. 변경 시 봇이 재시작됩니다.</div>
     <div id="strategyList" style="display:flex;flex-direction:column;gap:8px;max-height:50vh;overflow-y:auto"></div>
@@ -1202,7 +1143,7 @@ section.active{display:block}
 
 <!-- Cashflow Modal -->
 <div class="modal-bg" id="cashflowModal">
-  <div class="modal" style="max-width:460px">
+  <div class="modal" style="width:460px;max-width:100%">
     <h3 style="display:flex;align-items:center;gap:8px"><svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>입출금 기록</h3>
     <div style="font-size:12px;color:var(--c-text2);margin:-4px 0 12px">입금/출금을 기록하면 수익률(TWR)·KOSPI 알파 계산에서 자동 제외됩니다. 입금은 +, 출금은 − 금액.</div>
     <div class="form-group"><label class="form-label">날짜</label><input type="date" id="cfDate" class="form-input"></div>
@@ -1316,8 +1257,8 @@ function loadRebalance() {
     $("#rebalTbody").innerHTML = d.rows.length ? d.rows.map(row => {
       const diff = row.diff_qty || 0;
       const diffStr = diff === 0 ? '<span style="color:var(--c-text2)">유지</span>'
-        : diff > 0 ? `<span style="color:#16a34a;font-weight:600">+${diff} 매수</span>`
-        : `<span style="color:#dc2626;font-weight:600">${diff} 매도</span>`;
+        : diff > 0 ? `<span style="color:var(--c-up);font-weight:600">+${diff} 매수</span>`
+        : `<span style="color:var(--c-down);font-weight:600">${diff} 매도</span>`;
       return `<tr>
         <td><div style="font-weight:600">${row.name}</div><div style="font-size:11px;color:var(--c-text2)">${row.ticker}</div></td>
         <td><b>${(row.weight||0).toFixed(1)}%</b></td>
@@ -1348,7 +1289,7 @@ function loadRebalanceHistory() {
         const badge = buy ? '<span class="badge badge-green" style="font-size:10px">매수</span>'
                           : '<span class="badge badge-red" style="font-size:10px">매도</span>';
         const pnl = (!buy && o.pnl_pct != null)
-          ? ` <span style="${o.pnl_pct>=0?'color:#16a34a':'color:#dc2626'};font-size:11px">(${o.pnl_pct>=0?'+':''}${o.pnl_pct}%)</span>` : "";
+          ? ` <span style="${o.pnl_pct>=0?'color:var(--c-up)':'color:var(--c-down)'};font-size:11px">(${o.pnl_pct>=0?'+':''}${o.pnl_pct}%)</span>` : "";
         return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px">
           ${badge}<span style="flex:1">${o.name} <span style="color:var(--c-text2);font-size:11px">${o.ticker}</span></span>
           <span>${o.qty}주 @ ${(o.price||0).toLocaleString()}${pnl}</span></div>`;
@@ -1381,27 +1322,6 @@ function toast(msg, dur=2800) {
 
 // ── Modals ─────────────────────────────────────────────────────
 function closeModal(id) { $("#" + id).classList.remove("open"); }
-let _sellTicker = "", _editTicker = "";
-
-function openSell(ticker, name, qty) {
-  _sellTicker = ticker;
-  $("#sellName").value = name + " (" + ticker + ")";
-  $("#sellQtyHeld").textContent = qty;
-  $("#sellQty").value = qty;
-  $("#sellModal").classList.add("open");
-}
-function confirmSell() {
-  const qty = parseInt($("#sellQty").value);
-  if (!qty || qty < 1) { toast("수량을 입력하세요"); return; }
-  fetch("/api/sell/" + _sellTicker + "?token=" + TOKEN, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({qty, name: $("#sellName").value.split(" (")[0]})
-  }).then(r => r.json()).then(d => {
-    toast(d.ok ? "✅ 청산 완료 — 주문번호: " + d.order_no : "❌ " + d.msg);
-    closeModal("sellModal");
-    if (d.ok) setTimeout(loadPortfolio, 1500);
-  }).catch(() => toast("❌ 청산 요청 실패"));
-}
 
 // ── Controls ───────────────────────────────────────────────────
 function toggleAutoTrade(on) {
@@ -1476,15 +1396,17 @@ function renderReturnCurve(dates, curve, benchmark) {
   const canvas = $("#equityChart");
   const ctx = canvas.getContext("2d");
   if (equityChart) equityChart.destroy();
+  const up = curve.length < 2 || curve[curve.length - 1] >= curve[0];
+  const line = up ? "#00C805" : "#F0463A";
   const grad = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 220);
-  grad.addColorStop(0, "rgba(0,200,5,.16)");
+  grad.addColorStop(0, up ? "rgba(0,200,5,.16)" : "rgba(240,70,58,.16)");
   grad.addColorStop(1, "rgba(0,0,0,0)");
   const hasBench = benchmark && benchmark.some(v => v != null);
   const datasets = [{
     label: "내 평가금액", data: curve,
-    borderColor: "#00C805", backgroundColor: grad,
+    borderColor: line, backgroundColor: grad,
     fill: true, tension: 0.25, pointRadius: dates.length <= 12 ? 2.5 : 0, pointHoverRadius: 4,
-    pointHoverBackgroundColor: "#00C805", pointHoverBorderColor: "#fff", borderWidth: 2
+    pointHoverBackgroundColor: line, pointHoverBorderColor: "#fff", borderWidth: 2
   }];
   if (hasBench) datasets.push({
     label: "KOSPI200 (동일 시작금액)", data: benchmark,
@@ -1520,14 +1442,18 @@ function loadPortfolio() {
       const at = !!d.auto_trade;
       $("#atToggle").checked = at;
       $("#atLabel").textContent = at ? "ON" : "OFF";
-      $("#atLabel").style.color = at ? "#16a34a" : "#94a3b8";
+      $("#atLabel").style.color = at ? "var(--c-up)" : "var(--c-text2)";
       $("#kisModeBadge").textContent = d.kis_mode;
       $("#kisModeStatus").textContent = d.kis_mode === "실전투자" ? "실전" : "모의";
       $("#botRoleLabel").textContent = d.kis_mode + " 운용 중";
       $("#autoTradeStatus").textContent = at ? "ON" : "OFF";
-      $("#autoTradeStatus").style.color = at ? "#16a34a" : "#94a3b8";
+      $("#autoTradeStatus").style.color = at ? "var(--c-up)" : "var(--c-text2)";
       $("#botHolding").textContent = d.count + "종목";
-      if (d.strategy_name) $("#botStrategy").textContent = d.strategy_name;
+      if (d.strategy_name) {
+        $("#botStrategy").textContent = d.strategy_name;
+        $("#sbStrategySub").textContent = d.strategy_name;
+        $("#botName").textContent = (d.strategy || "") + " 리밸런싱 봇";
+      }
 
       $("#kpiTotal").textContent  = won(d.total);
       $("#kpiEquity").textContent = won(d.equity);

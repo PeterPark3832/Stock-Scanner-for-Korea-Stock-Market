@@ -79,6 +79,28 @@ kr_gem 리밸런싱 대시보드(`dashboard.py`)의 해상도별·기능별 UI �
 | 일시 | 방법 | PC(1440) | 태블릿(768) | 모바일(375) | 결과 |
 |------|------|----------|-------------|-------------|------|
 | 2026-06-22 | Playwright 자동+육안 | ✅ | ✅ | ✅ | 전 항목 통과 |
+| 2026-07-02 | 코드 정적 점검 + 서버 렌더/API 검증 | ✅ | ✅ | ✅ | 이슈 12건 발견·수정 (b9654f5) |
+
+### 2026-07-02 점검 상세 (5ce0470 기준 → b9654f5 수정)
+
+코드 리뷰 기반 전수 점검. 발견·수정된 이슈:
+
+| # | 이슈 | 수정 |
+|---|------|------|
+| 1 | 전략/입출금 모달 inline `max-width`만 있고 `.modal` width:340px 고정 → 의도한 520/460px 미적용 | `width:520/460px;max-width:100%` |
+| 2 | 리밸런싱 KPI 3장이 4컬럼 격자 → PC 빈 컬럼 | auto-fit minmax(150px,1fr) |
+| 3 | "3종목 각 1주" 하드코딩 (5종목 전략 추가로 부정확) | "목표 종목 각 1주" |
+| 4 | 사이드바 서브·봇 카드명 kr_gem 하드코딩 | 현재 전략명 동적 표시 |
+| 5 | 테이블 hover 옛 에메랄드 rgba(16,185,129) 잔존 | rgba(0,200,5,.05) |
+| 6 | JS 내 #16a34a/#dc2626 하드코딩 (토큰 불일치) | var(--c-up)/var(--c-down) |
+| 7 | 수동청산 모달 도달 불가 (openSell 호출처 0) | 모달+JS 제거, /api/sell 유지 |
+| 8 | 죽은 CSS 9종 (reason-bar-row·prog-bar·filter-bar·bt-tab·date-short/full·tbl-name·ctrl-group-action·badge-yellow·btn-danger) | 제거 (-99줄) |
+| 9 | 모바일 .kpi-value 24px/20px 중복 선언 충돌 | 단일 선언 |
+| 10 | viewport maximum-scale=1 (핀치줌 차단) | 제거 |
+| 11 | 평가금액 차트 하락 추세에도 항상 초록 | 추세 방향별 색 (TWR 차트와 일관) |
+| 12 | 자동매매 토글 aria-label 부재 | 추가 |
+
+검증: py_compile 통과, 전 API 200 (portfolio·rebalance/history·strategies·cashflows·logs), JS 참조 element ID 22종 전수 존재 확인, 잔여 죽은 참조 0건.
 
 ### 2026-06-22 점검 상세 (서버 a36a867 반영본)
 

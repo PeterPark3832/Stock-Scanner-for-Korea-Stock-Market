@@ -228,39 +228,46 @@ def get_account_holdings() -> list[dict]:
         return []
 
     tr_id = "TTTC8434R" if _KIS_MODE == "real" else "VTTC8434R"
-    try:
-        res = requests.get(
-            f"{KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "appkey":        KIS_APP_KEY,
-                "appsecret":     KIS_APP_SECRET,
-                "tr_id":         tr_id,
-                "Content-Type":  "application/json; charset=utf-8",
-            },
-            params={
-                "CANO":                  cano,
-                "ACNT_PRDT_CD":          acnt_prdt,
-                "AFHR_FLPR_YN":          "N",
-                "OFL_YN":                "",
-                "INQR_DVSN":             "02",
-                "UNPR_DVSN":             "01",
-                "FUND_STTL_ICLD_YN":     "N",
-                "FNCG_AMT_AUTO_RDPT_YN": "N",
-                "PRCS_DVSN":             "00",
-                "CTX_AREA_FK100":        "",
-                "CTX_AREA_NK100":        "",
-            },
-            timeout=10,
-        )
-        res.raise_for_status()
-        data = res.json()
-    except Exception as e:
-        log.error(f"[KIS 잔고조회] API 호출 실패: {e}")
-        return []
+    data = None
+    for attempt in range(3):  # KIS 잔고 API는 간헐적 500을 뱉음 — 재시도
+        try:
+            res = requests.get(
+                f"{KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "appkey":        KIS_APP_KEY,
+                    "appsecret":     KIS_APP_SECRET,
+                    "tr_id":         tr_id,
+                    "Content-Type":  "application/json; charset=utf-8",
+                },
+                params={
+                    "CANO":                  cano,
+                    "ACNT_PRDT_CD":          acnt_prdt,
+                    "AFHR_FLPR_YN":          "N",
+                    "OFL_YN":                "",
+                    "INQR_DVSN":             "02",
+                    "UNPR_DVSN":             "01",
+                    "FUND_STTL_ICLD_YN":     "N",
+                    "FNCG_AMT_AUTO_RDPT_YN": "N",
+                    "PRCS_DVSN":             "00",
+                    "CTX_AREA_FK100":        "",
+                    "CTX_AREA_NK100":        "",
+                },
+                timeout=10,
+            )
+            res.raise_for_status()
+            data = res.json()
+            break
+        except Exception as e:
+            if attempt < 2:
+                log.warning(f"[KIS 잔고조회] API 호출 실패 ({attempt + 1}/3) — 재시도: {e}")
+                time.sleep(2 * (attempt + 1))
+            else:
+                log.error(f"[KIS 잔고조회] API 호출 3회 실패: {e}")
+                return []
 
-    if data.get("rt_cd") != "0":
-        log.warning(f"[KIS 잔고조회] API 오류: {data.get('msg1', '')}")
+    if not data or data.get("rt_cd") != "0":
+        log.warning(f"[KIS 잔고조회] API 오류: {(data or {}).get('msg1', '')}")
         return []
 
     out = []

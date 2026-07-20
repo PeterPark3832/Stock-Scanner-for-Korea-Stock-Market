@@ -304,9 +304,14 @@ def _equity_snapshots() -> list[dict]:
         return []
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            snaps = json.load(f)
     except Exception:
         return []
+    snaps.sort(key=lambda s: s.get("date", ""))
+    # KIS 잔고조회 실패로 남은 equity=0 구멍 제거 (앞뒤 모두 보유 중이면 실제 청산이 아님)
+    return [s for i, s in enumerate(snaps)
+            if s.get("equity", 0) > 0 or i == 0 or i == len(snaps) - 1
+            or snaps[i - 1].get("equity", 0) <= 0 or snaps[i + 1].get("equity", 0) <= 0]
 
 CASHFLOW_FILE = os.path.join(BASE_DIR, "cash_flows.json")
 _flow_lock = threading.Lock()

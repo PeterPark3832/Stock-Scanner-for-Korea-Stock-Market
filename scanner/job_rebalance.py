@@ -113,8 +113,26 @@ def execute_rebalance() -> dict:
 
 
 def snapshot_equity() -> dict | None:
-    """오늘 kr_gem 포트폴리오 평가금액을 equity_snapshots.json에 기록 (하루 1건, 날짜 dedupe)."""
+    """오늘 포트폴리오 평가금액을 equity_snapshots.json에 기록 (하루 1건, 날짜 dedupe).
+
+    KIS 잔고 API가 간헐적 500을 뱉으면 보유가 빈 리스트로 와서 equity=0 스냅샷이
+    남고 그래프가 바닥으로 꺾인다. positions.json 기준 보유가 있는데 조회 결과가
+    비어 있으면 조회 실패로 보고 기록을 건너뛴다."""
+    from scanner.strategy_rebalance import STRATEGIES
     holdings, cash = _current_state()
+
+    expected = [p for p in load_positions()
+                if p.get("strategy") in STRATEGIES and p.get("quantity", 0) > 0]
+    if expected and not holdings:
+        log.error(f"[스냅샷] 보유 {len(expected)}종목 예상되나 KIS 잔고조회 결과 없음 "
+                  f"— 조회 실패로 판단, 스냅샷 기록 건너뜀")
+        send_telegram(
+            "⚠️ *평가금액 스냅샷 건너뜀*\n"
+            f"positions.json 상 {len(expected)}종목 보유 중이나 KIS 잔고조회가 비어 있습니다.\n"
+            "API 일시 오류로 판단해 잘못된 0원 기록을 방지했습니다."
+        )
+        return None
+
     total  = _total_value(holdings, cash)
     equity = total - cash
     today  = datetime.now(KST).strftime("%Y-%m-%d")

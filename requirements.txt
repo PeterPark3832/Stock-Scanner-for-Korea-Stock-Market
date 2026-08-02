@@ -6,3 +6,5 @@ python-dotenv
 holidays
 pytz
 filelock
+fastapi
+uvicorn

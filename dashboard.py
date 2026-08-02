@@ -16,9 +16,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 KST      = ZoneInfo("Asia/Seoul")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_FILE = os.path.join(BASE_DIR, ".env")
-POSITIONS_FILE    = os.path.join(BASE_DIR, "positions.json")
-HISTORY_FILE      = os.path.join(BASE_DIR, "trade_history.csv")
-SCREENING_LOG_FILE = os.path.join(BASE_DIR, "screening_log.json")
+POSITIONS_FILE = os.path.join(BASE_DIR, "positions.json")
+HISTORY_FILE   = os.path.join(BASE_DIR, "trade_history.csv")
 
 def read_env(key: str, default: str = "") -> str:
     try:
@@ -505,11 +504,13 @@ def api_rebalance_history(token: str = ""):
     raw = []
     bs = _benchmark_series(full_dates[0]) if full_dates else {}
     if bs:
-        keys = sorted(bs)
-        def closest(d):
-            prev = [k for k in keys if k <= d]
-            return bs[prev[-1]] if prev else None
-        raw = [closest(d) for d in full_dates]
+        keys = sorted(bs)          # full_dates도 정렬돼 있음 → 투포인터 O(D+K)
+        raw, ki, last = [], 0, None
+        for d in full_dates:
+            while ki < len(keys) and keys[ki] <= d:
+                last = bs[keys[ki]]
+                ki += 1
+            raw.append(last)
     b0 = next((x for x in raw if x), None) if raw else None
     # 평가금액 비교용(원): 시작금액 동일 KOSPI200 환산
     bench_value = [int(base * x / b0) if (x and b0) else None for x in raw] if (base and b0) else []
@@ -590,9 +591,8 @@ def api_logs(token: str = "", lines: int = 100):
 @app.get("/", response_class=HTMLResponse)
 def dashboard(token: str = ""):
     auth(token)
-    import holidays as _hol
     now = datetime.now()
-    kr = _hol.KR(years=[now.year, now.year + 1])
+    kr = _holidays.KR(years=[now.year, now.year + 1])
     hols = {str(d): name for d, name in sorted(kr.items())}
     return HTMLResponse(
         HTML.replace("__TOKEN__", token)

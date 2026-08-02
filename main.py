@@ -80,15 +80,19 @@ def send_startup_message() -> None:
     acct_str     = f"계좌: {KIS_ACCOUNT_NO}" if KIS_ACCOUNT_NO else "⚠️ KIS_ACCOUNT_NO 미설정"
 
     if STRATEGY_MODE == "rebalance":
+        from scanner.config import STRATEGY_KEY
+        from scanner.strategy_rebalance import get_strategy
+        spec = get_strategy(STRATEGY_KEY)
         send_telegram(
-            f"✅ *kr_gem 멀티에셋 리밸런싱 봇 시작* (채팅방 {len(TELEGRAM_CHAT_IDS)}개)\n"
+            f"✅ *{spec['name']} 리밸런싱 봇 시작* (채팅방 {len(TELEGRAM_CHAT_IDS)}개)\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"🕐 시작 시각: {now.strftime('%Y-%m-%d %H:%M')}\n"
             f"🔑 KIS 모드: {kis_mode_str} | {acct_str}\n"
-            f"📦 전략: KOSPI200·S&P500·나스닥100·금·반도체 중 모멘텀 상위 3개\n"
+            f"📦 전략: {spec['description']}\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⏰ 09:00 → Heartbeat\n"
             f"⏰ {REBALANCE_TIME} → 매월 첫 거래일에 자동 리밸런싱 실행\n"
+            f"⏰ 15:40 → 장마감 평가금액 스냅샷\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"대시보드 '리밸런싱' 탭에서 수동 실행도 가능합니다"
         )

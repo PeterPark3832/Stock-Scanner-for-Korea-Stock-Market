@@ -101,7 +101,8 @@ def _update_post_expire_pnl(now: datetime) -> None:
 def _heartbeat_rebalance(now: datetime) -> None:
     """리밸런싱 모드 09:00 경량 생존신호. 평가금액 스냅샷은 장마감(15:40) 별도 잡에서 기록.
     (눌림목 만료/TP/SL 매도 로직은 적용 안 함 — 월간 리밸런싱까지 보유 유지)"""
-    from scanner.config import _KIS_MODE
+    from scanner.config import _KIS_MODE, STRATEGY_KEY, REBALANCE_TIME
+    from scanner.strategy_rebalance import get_strategy
     from scanner.job_rebalance import _current_state, _total_value
     holdings, cash = _current_state()
     total  = _total_value(holdings, cash)
@@ -109,14 +110,14 @@ def _heartbeat_rebalance(now: datetime) -> None:
     with state._auto_trade_lock:
         do_trade = state._auto_trade_enabled
     send_telegram(
-        f"💚 *kr_gem 봇 정상 작동 중* ({now.strftime('%Y-%m-%d %H:%M')})\n"
+        f"💚 *{get_strategy(STRATEGY_KEY)['name']} 봇 정상 작동 중* ({now.strftime('%Y-%m-%d %H:%M')})\n"
         f"━━━━━━━━━━━━━━━━━━\n"
         f"💰 평가금액: {total:,}원 (주식 {equity:,} + 현금 {cash:,})\n"
         f"🔑 KIS 모드: {'실전투자' if _KIS_MODE == 'real' else '모의투자'}\n"
         f"{'🤖 자동 리밸런싱 ON' if do_trade else '📋 수동 모드'}\n"
-        f"📅 다음 리밸런싱: 매월 첫 거래일 09:05"
+        f"📅 다음 리밸런싱: 매월 첫 거래일 {REBALANCE_TIME}"
     )
-    log.info(f"[{now.strftime('%H:%M')}] Heartbeat(rebalance) — 평가금액 {total:,}원 스냅샷")
+    log.info(f"[{now.strftime('%H:%M')}] Heartbeat(rebalance) — 평가금액 {total:,}원")
     if now.weekday() == 0:
         send_weekly_report(now)
 

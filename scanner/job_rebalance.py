@@ -70,9 +70,10 @@ def execute_rebalance() -> dict:
     sells = [r for r in plan["rows"] if r["diff_qty"] < 0]
     buys  = [r for r in plan["rows"] if r["diff_qty"] > 0]
 
-    # 매도 실현손익 계산용: 교체 전 kr_gem 포지션의 평단
+    # 매도 실현손익 계산용: 교체 전 리밸런싱 관리 포지션(전략 무관)의 평단
+    from scanner.strategy_rebalance import STRATEGIES
     old_entry = {p["ticker"]: p.get("entry", 0)
-                 for p in load_positions() if p.get("strategy") == "kr_gem"}
+                 for p in load_positions() if p.get("strategy") in STRATEGIES}
 
     results = []
     for r in sells:
@@ -103,8 +104,9 @@ def execute_rebalance() -> dict:
         f"{r['name']}({r['ticker']}) {r['qty']}주" + (f" — {r['error']}" if not r["success"] else "")
         for r in results
     )
+    strat_name = get_strategy(STRATEGY_KEY)["name"]
     send_telegram(
-        f"🔄 *kr_gem 월간 리밸런싱 실행 완료* ({ok}/{len(results)} 성공)\n"
+        f"🔄 *{strat_name} 리밸런싱 실행 완료* ({ok}/{len(results)} 성공)\n"
         f"총자산: {plan['total_value']:,}원 | 현금: {plan['cash']:,}원\n"
         f"{lines or '  (주문 변경 없음)'}"
     )

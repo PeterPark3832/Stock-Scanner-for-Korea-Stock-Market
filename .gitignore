@@ -11,6 +11,11 @@ scanner.log
 # 포지션/거래 이력 (개인 데이터)
 positions.json
 trade_history.csv
+rebalance_log.json
+equity_snapshots.json
+cash_flows.json
+screening_log.json
+*.lock
 
 # Python 캐시
 __pycache__/

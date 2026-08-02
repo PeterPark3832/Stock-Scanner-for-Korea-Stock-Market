@@ -255,6 +255,17 @@ if __name__ == "__main__":
         if n == 0:
             log.info("[KIS 동기화] 신규 추가 없음")
 
+    # 첫 배포 직후 최대 한 달을 기다리지 않도록, 리뷰 이력이 없거나 오래됐으면 즉시 1회 실행.
+    # 백테스트라 수십 초 걸리므로 스케줄 루프를 막지 않게 별도 스레드에서 돌린다.
+    if STRATEGY_MODE == "rebalance" and STRATEGY_REVIEW_DAY:
+        from scanner.job_strategy_review import should_run_startup_review, job_strategy_review
+        if should_run_startup_review():
+            log.info("[전략리뷰] 최근 실행 이력 없음 — 기동 직후 1회 실행")
+            threading.Thread(
+                target=lambda: _safe_run(job_strategy_review, "기동 전략 리뷰"),
+                daemon=True, name="startup-review",
+            ).start()
+
     run_catchup()
 
     while not state._shutdown_event.is_set():

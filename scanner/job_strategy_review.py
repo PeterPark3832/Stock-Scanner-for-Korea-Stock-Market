@@ -139,6 +139,50 @@ def _verdict(cur: dict | None, best: dict, bench: dict | None, years: float) -> 
     return "\n✅ 1위와 유의한 차이 없음 — 유지 권장 (잦은 교체는 비용만 증가)"
 
 
+REVIEW_STAMP_FILE = "review_last.json"
+
+
+def _stamp_path() -> str:
+    import os
+    from scanner.config import _BASE_DIR
+    return os.path.join(_BASE_DIR, REVIEW_STAMP_FILE)
+
+
+def last_review_at() -> datetime | None:
+    import json
+    import os
+    p = _stamp_path()
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as f:
+            ts = json.load(f).get("ts", "")
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=KST)
+    except Exception:
+        return None
+
+
+def _record_review() -> None:
+    import json
+    try:
+        with open(_stamp_path(), "w", encoding="utf-8") as f:
+            json.dump({"ts": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")}, f)
+    except Exception as e:
+        log.warning(f"[전략리뷰] 실행 기록 실패: {e}")
+
+
+def should_run_startup_review(min_days: int = 20, now: datetime | None = None) -> bool:
+    """기동 시 리뷰를 돌릴지. 한 번도 안 돌렸거나 마지막 실행이 오래됐으면 True.
+
+    첫 배포 후 최대 한 달을 기다려야 첫 리포트를 받는 것은 늦다. 반대로 재시작마다
+    돌리면 스팸이 되고 FDR 호출도 낭비다 — 그래서 최근 실행 이력으로 가른다.
+    """
+    last = last_review_at()
+    if last is None:
+        return True
+    return ((now or datetime.now(KST)) - last).days >= min_days
+
+
 def job_strategy_review(seed: int | None = None) -> str | None:
     """실데이터 백테스트 실행 후 텔레그램 발송. 서버(FDR 접근 가능)에서만 동작."""
     try:
@@ -181,6 +225,7 @@ def job_strategy_review(seed: int | None = None) -> str | None:
 
     msg = build_review(results, STRATEGY_KEY, current_tax_profile())
     send_telegram(msg)
+    _record_review()
     log.info("[전략리뷰] 발송 완료")
     return msg
 

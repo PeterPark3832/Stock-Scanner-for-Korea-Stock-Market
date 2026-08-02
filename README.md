@@ -65,7 +65,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 219개 테스트 전체 통과 확인
+# 227개 테스트 전체 통과 확인
 ```
 
 ---
@@ -121,6 +121,7 @@ python -m pytest tests/ -q
 | 09:00 | Heartbeat — 평가금액·생존신호 (월요일: 주간 리포트) |
 | 10:00 | 매월 첫 거래일에만 자동 리밸런싱 실행 (`REBALANCE_TIME`) |
 | 15:40 | 장마감 평가금액 스냅샷 (TWR·그래프용) |
+| 기동 직후 | 전략 리뷰 1회 (최근 실행 이력 없을 때만) |
 | 매월 25일 18:00 | 전략 리뷰 — 5종 백테스트 비교를 텔레그램으로 발송 |
 | 수시 | 대시보드 '리밸런싱' 탭에서 수동 실행 가능 |
 
@@ -180,9 +181,13 @@ python -m pytest tests/ -q
 `backtest_rebalance.py`는 실제 봇이 쓰는 계산 함수(`_compute_dual`/`_compute_vaa`)를
 그대로 호출하므로, 여기서 나온 성과는 봇이 낼 성과와 동일합니다.
 
-**봇이 매월 자동으로 비교해 보내줍니다** — 매월 25일 18:00에 5종 비교 리포트가
-텔레그램으로 오고, `/review`로 즉시 실행할 수도 있습니다. 아래는 직접 돌려보고
-싶을 때의 방법입니다.
+**봇이 알아서 비교해 보내줍니다.**
+- **배포 직후 1회** — 기동 시 리뷰 이력이 없으면 즉시 실행합니다(첫 리포트를 위해
+  한 달을 기다릴 필요 없음). 재시작마다 반복되지는 않습니다.
+- **매월 25일 18:00** — 정기 비교 리포트
+- **`/review`** — 언제든 즉시 실행
+
+아래는 직접 돌려보고 싶을 때의 방법입니다.
 
 ```bash
 # 전 전략 비교 (FDR 접근 가능한 운영 서버에서 실행)
@@ -273,14 +278,14 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (219개)
+├── tests/                     # pytest 테스트 (227개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트
 ```
 
 런타임 생성 파일(모두 .gitignore): `positions.json` `trade_history.csv`
-`rebalance_log.json` `equity_snapshots.json` `cash_flows.json` `scanner.log`
+`rebalance_log.json` `equity_snapshots.json` `cash_flows.json` `review_last.json` `scanner.log`
 
 전체 아키텍처 → [`ARCHITECTURE.md`](ARCHITECTURE.md)
 

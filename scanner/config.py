@@ -35,6 +35,11 @@ REBALANCE_TIME = os.getenv("REBALANCE_TIME", "09:05")
 # "주문가능금액 부족"으로 매수가 통째로 실패한다(= 그 달 미투자). 0.5% 여유로 방지.
 REBALANCE_CASH_BUFFER = float(os.getenv("REBALANCE_CASH_BUFFER", "0.995"))
 
+# 전략 리뷰 — 매월 이 날짜에 5개 전략을 실데이터로 백테스트해 텔레그램 보고.
+# 리밸런싱(첫 거래일) 전에 여유를 두고 받아보도록 25일 기본. 0이면 자동 실행 안 함.
+STRATEGY_REVIEW_DAY  = int(os.getenv("STRATEGY_REVIEW_DAY", "25"))
+STRATEGY_REVIEW_TIME = os.getenv("STRATEGY_REVIEW_TIME", "18:00")
+
 _KIS_MODE = os.getenv("KIS_MODE", "paper").lower()
 KIS_BASE_URL = (
     "https://openapi.koreainvestment.com:9443"

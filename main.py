@@ -15,6 +15,7 @@ from scanner.config import (
     STRATEGY, KIS_ACCOUNT_NO, TRADE_AMOUNT_PER_STOCK,
     _KIS_MODE, TELEGRAM_CHAT_IDS,
     STRATEGY_MODE, REBALANCE_TIME,
+    STRATEGY_REVIEW_DAY, STRATEGY_REVIEW_TIME,
 )
 from scanner import state
 from scanner.notify import send_telegram
@@ -93,6 +94,9 @@ def send_startup_message() -> None:
             f"⏰ 09:00 → Heartbeat\n"
             f"⏰ {REBALANCE_TIME} → 매월 첫 거래일에 자동 리밸런싱 실행\n"
             f"⏰ 15:40 → 장마감 평가금액 스냅샷\n"
+            + (f"⏰ 매월 {STRATEGY_REVIEW_DAY}일 {STRATEGY_REVIEW_TIME} → 전략 리뷰 리포트\n"
+               if STRATEGY_REVIEW_DAY else "")
+            +
             f"━━━━━━━━━━━━━━━━━━\n"
             f"대시보드 '리밸런싱' 탭에서 수동 실행도 가능합니다"
         )
@@ -203,6 +207,17 @@ if __name__ == "__main__":
         schedule.every().day.at(REBALANCE_TIME, "Asia/Seoul").do(
             lambda: _safe_run(_rebalance_if_first_trading_day, "월간 리밸런싱")
         )
+        if STRATEGY_REVIEW_DAY:
+            def _strategy_review_job() -> None:
+                if datetime.now(KST).day != STRATEGY_REVIEW_DAY:
+                    return
+                from scanner.job_strategy_review import job_strategy_review
+                job_strategy_review()
+
+            schedule.every().day.at(STRATEGY_REVIEW_TIME, "Asia/Seoul").do(
+                lambda: _safe_run(_strategy_review_job, "전략 리뷰")
+            )
+
         schedule.every().day.at("15:40", "Asia/Seoul").do(
             lambda: _safe_run(_snapshot_equity_job, "장마감 평가금액 스냅샷")
         )

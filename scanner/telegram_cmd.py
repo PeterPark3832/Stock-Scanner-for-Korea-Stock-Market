@@ -96,12 +96,29 @@ def _cmd_stats() -> None:
     )
 
 
+def _cmd_review() -> None:
+    """전략 리뷰 즉시 실행. 백테스트라 수십 초 걸리므로 별도 스레드에서 돌린다."""
+    import threading
+    send_telegram("📊 전략 리뷰 실행 중... (가격 수집·백테스트, 1분 내외)")
+
+    def _run() -> None:
+        try:
+            from scanner.job_strategy_review import job_strategy_review
+            job_strategy_review()
+        except Exception as e:
+            send_telegram(f"⚠️ *전략 리뷰 실패*\n`{str(e)[:200]}`")
+
+    threading.Thread(target=_run, daemon=True, name="strategy-review").start()
+
+
 def handle_command(text: str) -> None:
     parts = text.strip().lower().split()
     cmd   = parts[0]
 
     if cmd == "/positions":
         _cmd_positions()
+    elif cmd == "/review":
+        _cmd_review()
     elif cmd == "/stats":
         _cmd_stats()
     elif cmd == "/report":
@@ -142,6 +159,7 @@ def handle_command(text: str) -> None:
         send_telegram(
             "📋 *사용 가능한 커맨드*\n\n"
             "/positions — 보유 포지션 실시간 PnL\n"
+            "/review — 전략 5종 백테스트 비교 리포트\n"
             "/stats — 최근 스크리닝 필터 통계\n"
             "/report — 누적 성과 리포트\n"
             "/pause — 신규 신호 발송 정지\n"

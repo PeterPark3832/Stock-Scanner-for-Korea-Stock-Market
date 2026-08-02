@@ -65,7 +65,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 130개 테스트 전체 통과 확인
+# 155개 테스트 전체 통과 확인
 ```
 
 ---
@@ -81,6 +81,7 @@ python -m pytest tests/ -q
 | `STRATEGY_MODE` | `rebalance` | `rebalance`=월간 리밸런싱 / `breakout`=눌림목 |
 | `STRATEGY_KEY` | `kr_gem` | 리밸런싱 전략: `kr_asset_momentum` `kr_gem` `kr_growth` `kr_leaders` `vaa_kr` |
 | `REBALANCE_TIME` | `09:05` | 첫 거래일 자동 리밸런싱 실행 시각 |
+| `REBALANCE_CASH_BUFFER` | `0.995` | 매수 여력 버퍼 — 체결가 변동으로 인한 주문 실패 방지 |
 
 ### 텔레그램
 
@@ -165,6 +166,44 @@ python -m pytest tests/ -q
 
 ---
 
+## 전략 선택 — 백테스트로 결정하기
+
+전략 5종은 성향이 다르므로 **어느 것을 쓰느냐가 수익에 가장 크게 작용**합니다.
+`backtest_rebalance.py`는 실제 봇이 쓰는 계산 함수(`_compute_dual`/`_compute_vaa`)를
+그대로 호출하므로, 여기서 나온 성과는 봇이 낼 성과와 동일합니다.
+
+```bash
+# 전 전략 비교 (FDR 접근 가능한 운영 서버에서 실행)
+python backtest_rebalance.py --seed 10000000
+
+# 실제 시드로 — 소액일수록 정수 주수 제약이 성과를 갉아먹으므로 반드시 본인 금액으로
+python backtest_rebalance.py --seed 3000000
+
+# 체결 비용 가정을 바꿔 민감도 확인
+python backtest_rebalance.py --slippage 0.003
+```
+
+리포트 해석 순서:
+
+1. **연도별 수익률** — 특정 해에만 몰린 전략은 과최적화 위험. 고르게 양호한 쪽을 우선.
+2. **Calmar(= CAGR ÷ MDD)** — 총수익만 보고 고르면 감당 못 할 낙폭을 떠안습니다.
+3. **벤치마크 초과 여부** — KOSPI200 단순 보유를 못 이기면 전략을 쓸 이유가 없습니다.
+4. **집행 시점 비교** — 시가체결(현행 09:05) vs 종가체결 CAGR 차이. 종가가 유의하게
+   유리하면 `REBALANCE_TIME`을 장중으로 옮기는 것만으로 수익이 개선됩니다.
+
+> ⚠️ ETF 상장일 제약으로 표본 기간이 짧습니다. CAGR 1~2%p 차이는 노이즈일 수 있으니
+> 근소한 우위로 전략을 자주 바꾸지 마세요. 잦은 교체는 매매비용만 늘립니다.
+
+### 수익에 직결되는 설정
+
+| 변수 | 기본값 | 수익 영향 |
+|------|--------|-----------|
+| `STRATEGY_KEY` | `kr_gem` | 가장 큰 변수 — 위 백테스트로 결정 |
+| `REBALANCE_CASH_BUFFER` | `0.995` | 낮추면 매수 실패 위험↓·현금 드래그↑. 갭이 잦으면 0.99 |
+| `REBALANCE_TIME` | `09:05` | 개장 직후는 스프레드가 넓음. 백테스트 결과에 따라 조정 |
+
+---
+
 ## 프로젝트 구조
 
 ```
@@ -190,7 +229,8 @@ python -m pytest tests/ -q
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (130개)
+├── tests/                     # pytest 테스트 (155개)
+├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트
 ```

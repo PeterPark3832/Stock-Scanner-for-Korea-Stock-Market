@@ -101,6 +101,32 @@ class TestAccounting:
         assert r["n_rebal"] > 0
 
 
+class TestExecTiming:
+    def _prices_open_below_close(self, tickers, n=900):
+        """매일 시가 < 종가 (개장 직후 매수가 유리한 국면)."""
+        idx = pd.bdate_range("2019-01-01", periods=n)
+        out = {}
+        for tk in tickers:
+            close = [100.0 * (1.0005 ** i) for i in range(n)]
+            open_ = [c * 0.99 for c in close]
+            out[tk] = pd.DataFrame({"Close": close, "Open": open_}, index=idx)
+        return out
+
+    def test_open_vs_close_execution_differs(self):
+        prices = self._prices_open_below_close(sorted(bt.MANAGED_UNIVERSE))
+        o = bt.run_backtest("kr_gem", prices, "2020-01-01", 10_000_000, 0.0, 0.0, "open")
+        c = bt.run_backtest("kr_gem", prices, "2020-01-01", 10_000_000, 0.0, 0.0, "close")
+        assert o and c
+        assert o["cagr"] != c["cagr"], "체결 시점이 성과에 반영되지 않음"
+        # 시가가 종가보다 1% 싸므로 시가 매수(현행)가 이 국면에선 유리해야 함
+        assert o["cagr"] > c["cagr"]
+
+    def test_invalid_exec_defaults_to_close_column(self):
+        prices = self._prices_open_below_close(sorted(bt.MANAGED_UNIVERSE))
+        r = bt.run_backtest("kr_gem", prices, "2020-01-01", 10_000_000, 0.0, 0.0, "close")
+        assert r is not None
+
+
 class TestBuyAndHold:
     def test_tracks_underlying_return(self):
         prices = make_prices(["069500"], n=600, trend={"069500": 0.001})

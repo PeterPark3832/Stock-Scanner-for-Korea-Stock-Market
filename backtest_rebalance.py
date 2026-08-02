@@ -97,8 +97,14 @@ def target_weights_asof(spec: dict, prices: dict[str, pd.DataFrame],
 
 
 def run_backtest(key: str, prices: dict[str, pd.DataFrame], start: str, seed: int,
-                 commission: float, slippage: float) -> dict | None:
-    """월간 리밸런싱 시뮬레이션. 체결은 리밸런싱일 시가 + 슬리피지."""
+                 commission: float, slippage: float, exec_at: str = "open") -> dict | None:
+    """월간 리밸런싱 시뮬레이션.
+
+    exec_at="open"  : 리밸런싱일 시가 체결 (현행 봇 09:05 시장가)
+    exec_at="close" : 리밸런싱일 종가 체결 (장중 늦은 시간 집행 근사)
+    두 결과의 차이가 곧 '개장 직후 집행'의 비용이다.
+    """
+    exec_col = "Open" if exec_at == "open" else "Close"
     spec = STRATEGIES[key]
     tickers = [t for t in universe_for(key) if t in prices]
     if not tickers:
@@ -149,7 +155,7 @@ def run_backtest(key: str, prices: dict[str, pd.DataFrame], start: str, seed: in
             w = target_weights_asof(spec, prices, tickers, day)
             if w:
                 # 체결가 = 당일 시가 (매수는 +슬리피지, 매도는 -슬리피지)
-                execp = {tk: price_on(tk, day, "Open") for tk in set(list(w) + list(holdings))}
+                execp = {tk: price_on(tk, day, exec_col) for tk in set(list(w) + list(holdings))}
                 execp = {k: v for k, v in execp.items() if v}
 
                 total = cash + sum(holdings.get(tk, 0) * execp.get(tk, 0) for tk in holdings)
@@ -260,7 +266,8 @@ def buy_and_hold(prices: dict[str, pd.DataFrame], ticker: str, start: pd.Timesta
     return _metrics(f"bh_{ticker}", spec, ser, seed, qty * p0 * commission, qty * p0, 1, 0)
 
 
-def fmt_report(results: list[dict], seed: int, commission: float, slippage: float) -> str:
+def fmt_report(results: list[dict], seed: int, commission: float, slippage: float,
+               timing: list | None = None) -> str:
     L = []
     A = L.append
     A("=" * 100)
@@ -307,6 +314,18 @@ def fmt_report(results: list[dict], seed: int, commission: float, slippage: floa
     A("-" * 100)
     A("")
 
+    if timing:
+        A("[ 집행 시점 비교 — 개장 직후(09:05) 체결의 비용 ]")
+        A("-" * 100)
+        A(f"{'전략':26s} {'시가체결(현행)':>14s} {'종가체결':>12s} {'차이':>10s}")
+        for name, o, c, d in timing:
+            A(f"{name[:25]:26s} {o:13.2f}% {c:11.2f}% {d:+9.2f}%p")
+        avg = sum(d for *_, d in timing) / len(timing)
+        A("-" * 100)
+        A(f"평균 차이 {avg:+.2f}%p/년 — 양수면 장중 늦은 집행이 유리(REBALANCE_TIME 조정 검토).")
+        A("주의: 이 비교는 시가/종가 '가격차'만 반영하며 호가 스프레드는 --slippage 가정에 포함.")
+        A("")
+
     strat = [r for r in results if not r["key"].startswith("bh_")]
     bh = [r for r in results if r["key"].startswith("bh_")]
     if strat:
@@ -337,6 +356,8 @@ def main() -> int:
     ap.add_argument("--start", default="2016-01-01", help="시뮬레이션 시작일")
     ap.add_argument("--commission", type=float, default=DEFAULT_COMMISSION)
     ap.add_argument("--slippage", type=float, default=DEFAULT_SLIPPAGE)
+    ap.add_argument("--exec-at", dest="exec_at", choices=("open", "close"), default="open",
+                    help="체결 시점: open=현행 09:05 / close=장중 늦은 집행 근사")
     ap.add_argument("--out", default="backtest_rebalance_report.txt")
     args = ap.parse_args()
 
@@ -350,12 +371,21 @@ def main() -> int:
     print(f"\n[2/3] 전략별 시뮬레이션 (시드 {args.seed:,}원)")
     results = []
     for key in STRATEGIES:
-        r = run_backtest(key, prices, args.start, args.seed, args.commission, args.slippage)
+        r = run_backtest(key, prices, args.start, args.seed, args.commission,
+                         args.slippage, args.exec_at)
         if r:
             results.append(r)
             print(f"  · {r['name'][:24]:26s} CAGR {r['cagr']:6.2f}%  MDD {r['mdd']:6.1f}%")
         else:
             print(f"  ! {STRATEGIES[key]['name']}: 데이터 부족 — 건너뜀")
+
+    # 집행 시점 비교 — 개장 직후(09:05) 체결이 얼마나 비싼지 실측
+    timing = []
+    for key in STRATEGIES:
+        a = run_backtest(key, prices, args.start, args.seed, args.commission, args.slippage, "open")
+        b = run_backtest(key, prices, args.start, args.seed, args.commission, args.slippage, "close")
+        if a and b:
+            timing.append((a["name"], a["cagr"], b["cagr"], b["cagr"] - a["cagr"]))
 
     if results:
         lo = min(r["start"] for r in results)
@@ -365,7 +395,7 @@ def main() -> int:
             results.append(b)
 
     print("\n[3/3] 리포트 생성")
-    report = fmt_report(results, args.seed, args.commission, args.slippage)
+    report = fmt_report(results, args.seed, args.commission, args.slippage, timing)
     print("\n" + report)
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(report + "\n")

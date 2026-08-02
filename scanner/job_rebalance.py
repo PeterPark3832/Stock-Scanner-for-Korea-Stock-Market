@@ -24,41 +24,84 @@ def _current_state() -> tuple[dict[str, dict], int]:
     return holdings, cash
 
 
-def _total_value(holdings: dict[str, dict], cash: int) -> int:
+def _live_prices(tickers) -> dict[str, int]:
+    """티커별 실시간 현재가를 한 번씩만 조회 (중복 KIS 호출 방지)."""
+    out: dict[str, int] = {}
+    for tk in dict.fromkeys(tickers):
+        info = get_current_price(tk)
+        if info and info.get("current"):
+            out[tk] = info["current"]
+    return out
+
+
+def _total_value(holdings: dict[str, dict], cash: int,
+                 prices: dict[str, int] | None = None) -> int:
     total = cash
     for tk, h in holdings.items():
-        price_info = get_current_price(tk)
-        price = price_info["current"] if price_info else h["avg_price"]
+        price = (prices or {}).get(tk)
+        if not price:
+            info = get_current_price(tk)
+            price = info["current"] if info else h["avg_price"]
         total += price * h["qty"]
     return total
+
+
+def _sweep_leftover_cash(rows: list[dict], budget: float) -> None:
+    """정수 주수로 남은 잔돈을 가장 미달된 종목에 추가 배정한다(제자리 수정).
+
+    각 슬롯을 내림하면 자투리 현금이 매달 놀게 되고, 소액 계좌일수록 비중이
+    목표에서 크게 벗어난다. 예산(=총자산×버퍼) 안에서만 채우므로 주문 실패 위험은 없다.
+    """
+    spent = sum(r["target_qty"] * r["price"] for r in rows if r["price"] > 0)
+    leftover = budget - spent
+    for _ in range(100):                      # 안전 상한
+        cands = [r for r in rows if r["price"] > 0 and r["price"] <= leftover]
+        if not cands:
+            break
+        # 목표금액 대비 가장 덜 채워진 슬롯부터. 아직 미달인 슬롯이 있으면 채운다
+        # (유휴 현금 드래그가 소폭 비중 초과보다 비용이 크다).
+        deficit = lambda r: budget * r["weight"] / 100.0 - r["target_qty"] * r["price"]
+        pick = max(cands, key=deficit)
+        if deficit(pick) <= 0:
+            break                             # 모든 슬롯이 목표 충족 — 초과 매수 금지
+        pick["target_qty"] += 1
+        pick["diff_qty"] = pick["target_qty"] - pick["current_qty"]
+        leftover -= pick["price"]
 
 
 def preview_rebalance() -> dict:
     """주문 없이 목표 비중·현재 비중·필요 주문 수량만 계산 (활성 전략 기준)."""
     targets = compute_target_weights(STRATEGY_KEY)
     holdings, cash = _current_state()
-    total = _total_value(holdings, cash)
+    # 평가금액과 주문수량을 같은 가격 기준으로 맞춘다. FDR 종가(전일)로 수량을 잡으면
+    # 갭 발생 시 비중이 어긋나고 매수가 실패한다 → 실시간가 우선, 실패 시 FDR 종가.
+    live  = _live_prices([t["ticker"] for t in targets] + list(holdings))
+    total = _total_value(holdings, cash, live)
 
     rows = []
     target_tickers = set()
     for t in targets:
-        tk, price = t["ticker"], t["price"]
+        tk = t["ticker"]
+        price = live.get(tk) or t["price"]
         target_tickers.add(tk)
         cur_qty       = holdings.get(tk, {}).get("qty", 0)
-        # 버퍼 적용: 수량은 전일 종가 기준인데 체결은 당일 시가 → 갭상승 시 현금 부족으로
+        # 버퍼 적용: 조회가와 실제 체결가(시장가) 사이 변동으로 주문가능금액을 넘겨
         # 매수 전체가 실패하는 것을 막는다.
         target_dollar = total * REBALANCE_CASH_BUFFER * t["weight"] / 100.0
         target_qty    = int(target_dollar // price) if price > 0 else 0
         rows.append({
-            **t, "current_qty": cur_qty, "target_qty": target_qty,
+            **t, "price": price, "current_qty": cur_qty, "target_qty": target_qty,
             "diff_qty": target_qty - cur_qty,
         })
 
-    # 목표비중에서 빠졌지만 여전히 보유 중인 kr_gem 종목 → 전량 매도 대상
+    _sweep_leftover_cash(rows, total * REBALANCE_CASH_BUFFER)
+
+    # 목표비중에서 빠졌지만 여전히 보유 중인 관리 종목 → 전량 매도 대상
     for tk, h in holdings.items():
         if tk not in target_tickers:
             rows.append({
-                "ticker": tk, "name": h["name"], "weight": 0.0, "price": 0.0,
+                "ticker": tk, "name": h["name"], "weight": 0.0,
+                "price": live.get(tk) or h.get("avg_price", 0),
                 "current_qty": h["qty"], "target_qty": 0, "diff_qty": -h["qty"],
             })
 

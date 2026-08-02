@@ -50,7 +50,18 @@ cp .env.example .env
 # .env 파일을 열어 실제 값 입력
 ```
 
-### 3. 실행
+### 3. 배포 전 점검 (권장)
+
+```bash
+python -m scanner.doctor
+```
+
+수익을 갉아먹는 설정 오류를 한 번에 잡습니다 — 체결 시각이 ETF LP 호가 공백
+구간인지, 자본이 전략 최소요구액에 미달하는지, 과세 노출이 과한지, 자동매매가
+계좌번호 없이 켜져 있는지 등. 조치가 필요하면 종료코드 1을 반환하므로
+배포 스크립트에 넣어 쓸 수 있습니다. `--no-net`으로 설정만 점검할 수도 있습니다.
+
+### 4. 실행
 
 ```bash
 # 봇 실행
@@ -61,11 +72,11 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 # 접속: http://<서버IP>:8081?token=<DASHBOARD_TOKEN>
 ```
 
-### 4. 테스트
+### 5. 테스트
 
 ```bash
 python -m pytest tests/ -q
-# 227개 테스트 전체 통과 확인
+# 248개 테스트 전체 통과 확인
 ```
 
 ---
@@ -263,6 +274,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── strategy_rebalance.py  # 리밸런싱 전략 5종 — 목표비중 계산
 │   ├── job_rebalance.py       # 월간 리밸런싱 실행·평가금액 스냅샷
 │   ├── job_strategy_review.py # 전략 5종 자동 백테스트 비교 리포트
+│   ├── doctor.py              # 배포 점검 (수익 영향 설정 진단)
 │   ├── job_heartbeat.py       # 09:00 생존신호
 │   ├── job_screener.py        # (눌림목) 1차·2차 스크리닝
 │   ├── job_monitor.py         # (눌림목) TP/SL·갭오픈 체크
@@ -278,7 +290,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (227개)
+├── tests/                     # pytest 테스트 (248개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트

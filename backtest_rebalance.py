@@ -1,7 +1,7 @@
 """리밸런싱 전략 5종 백테스트 — 실전 로직 그대로, 수수료·슬리피지 반영.
 
 핵심 설계
-  1) 전략 계산은 scanner.strategy_rebalance 의 _compute_dual/_compute_vaa 를 **그대로 호출**한다.
+  1) 전략 계산은 scanner.strategy_rebalance 의 _dispatch(_compute_dual/_compute_vaa/_compute_ensemble)를 **그대로 호출**한다.
      백테스트용으로 로직을 재구현하지 않으므로, 여기서 나온 성과는 실제 봇이 낼 성과와 같다.
   2) Look-ahead 차단: D일 리밸런싱 판단에는 D일 **이전** 종가까지만 쓴다(D일 종가는 장중에 모름).
      체결은 D일 시가에 슬리피지를 얹어 처리한다(봇이 09:05 시장가로 주문하므로).
@@ -24,8 +24,7 @@ from datetime import datetime
 import pandas as pd
 
 from scanner.strategy_rebalance import (
-    STRATEGIES, MANAGED_UNIVERSE, NAMES,
-    universe_for, _compute_dual, _compute_vaa,
+    STRATEGIES, MANAGED_UNIVERSE, NAMES, universe_for, _dispatch,
 )
 
 # ── 실거래 비용 가정 ────────────────────────────────────────────────
@@ -78,7 +77,7 @@ def first_trading_days(index: pd.DatetimeIndex, start: pd.Timestamp) -> list[pd.
 def target_weights_asof(spec: dict, prices: dict[str, pd.DataFrame],
                         tickers: list[str], asof: pd.Timestamp) -> dict[str, float]:
     """asof 시점 목표 비중 — asof '이전' 종가만 사용해 look-ahead를 차단한다.
-    프로덕션 함수(_compute_dual/_compute_vaa)를 그대로 호출한다."""
+    프로덕션 디스패처(_dispatch)를 그대로 호출한다."""
     closes = {}
     for tk in tickers:
         df = prices.get(tk)
@@ -89,7 +88,7 @@ def target_weights_asof(spec: dict, prices: dict[str, pd.DataFrame],
             closes[tk] = s
     if not closes:
         return {}
-    w = _compute_vaa(spec, closes) if spec["type"] == "vaa" else _compute_dual(spec, closes)
+    w = _dispatch(spec, closes)
     total = sum(w.values())
     if total > 0 and abs(total - 100.0) > 0.01:
         w = {tk: v / total * 100.0 for tk, v in w.items()}
@@ -271,7 +270,7 @@ def fmt_report(results: list[dict], seed: int, commission: float, slippage: floa
     L = []
     A = L.append
     A("=" * 100)
-    A("리밸런싱 전략 백테스트 — 실전 로직(_compute_dual/_compute_vaa) 그대로, 비용 반영")
+    A("리밸런싱 전략 백테스트 — 실전 로직(_dispatch) 그대로, 비용 반영")
     A("=" * 100)
     A(f"시드 {seed:,}원 | 수수료 {commission*100:.3f}%/편도 | 슬리피지 {slippage*100:.2f}%/편도 "
       f"| 매수여력 {CASH_BUFFER*100:.1f}%")

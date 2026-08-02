@@ -5,7 +5,7 @@ import pytest
 from scanner.strategy_rebalance import (
     STRATEGIES, DEFAULT_KEY, MANAGED_UNIVERSE, NAMES,
     get_strategy, list_strategies, universe_for,
-    _blended_momentum, _w13612_momentum, _compute_dual, _compute_vaa,
+    _blended_momentum, _w13612_momentum, _compute_dual, _compute_vaa, _compute_ensemble,
     compute_target_weights,
 )
 
@@ -178,6 +178,62 @@ class TestComputeVaa:
 
     def test_no_offensive_data_returns_empty(self):
         assert _compute_vaa(self.SPEC, {}) == {}
+
+
+class TestComputeEnsemble:
+    """앙상블 — 짧은 표본으로 한 전략을 고르는 위험을 분산."""
+
+    SPEC = STRATEGIES["kr_ensemble"]
+
+    def _closes(self):
+        return {"069500": series_with_return(0.20), "143850": series_with_return(0.18),
+                "133690": series_with_return(0.16), "132030": series_with_return(0.05),
+                "091160": series_with_return(0.14), "229200": series_with_return(0.22),
+                "114260": series_with_return(0.01), "153130": series_with_return(0.0)}
+
+    def test_weights_sum_to_100(self):
+        w = _compute_ensemble(self.SPEC, self._closes())
+        assert sum(w.values()) == pytest.approx(100.0, abs=0.01)
+
+    def test_consensus_assets_get_more_weight(self):
+        """여러 전략이 공통으로 지목한 자산에 비중이 더 실려야 한다."""
+        from scanner.strategy_rebalance import _dispatch
+        closes = self._closes()
+        picks = {}
+        for m in self.SPEC["members"]:
+            for tk in _dispatch(STRATEGIES[m], closes):
+                picks[tk] = picks.get(tk, 0) + 1
+        w = _compute_ensemble(self.SPEC, closes)
+        top = max(w, key=w.get)
+        assert picks[top] == max(picks.values()), "합의도가 가장 높은 자산이 최대 비중이어야 함"
+
+    def test_never_worse_than_worst_member_concentration(self):
+        """앙상블은 어떤 단일 전략보다도 한 자산에 덜 몰린다(분산 효과)."""
+        from scanner.strategy_rebalance import _dispatch
+        closes = self._closes()
+        ens = _compute_ensemble(self.SPEC, closes)
+        for m in self.SPEC["members"]:
+            member = _dispatch(STRATEGIES[m], closes)
+            assert max(ens.values()) <= max(member.values()) + 1e-9
+
+    def test_data_outage_returns_empty(self):
+        assert _compute_ensemble(self.SPEC, {}) == {}
+
+    def test_survives_single_member_failure(self):
+        """구성 전략 하나가 실패해도 과반이 살아 있으면 계산을 이어간다."""
+        closes = self._closes()
+        del closes["229200"]      # kr_asset_momentum/kr_growth 유니버스 일부 결손
+        w = _compute_ensemble(self.SPEC, closes)
+        assert w and sum(w.values()) == pytest.approx(100.0, abs=0.01)
+
+    def test_universe_is_union_of_members(self):
+        members_u = set()
+        for m in self.SPEC["members"]:
+            members_u |= set(universe_for(m))
+        assert set(universe_for("kr_ensemble")) == members_u
+
+    def test_registered_in_managed_universe(self):
+        assert set(universe_for("kr_ensemble")) <= MANAGED_UNIVERSE
 
 
 class TestComputeTargetWeights:

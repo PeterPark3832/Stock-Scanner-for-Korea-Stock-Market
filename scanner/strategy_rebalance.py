@@ -57,6 +57,13 @@ STRATEGIES: dict[str, dict] = {
                  "006400", "207940", "068270", "105560", "012330"],
         "safe": "114260", "cash_proxy": "153130", "top_n": 4, "min_seed": 50_000_000,
     },
+    "kr_ensemble": {
+        "name": "멀티전략 앙상블", "profile": "밸런스",
+        "description": "듀얼모멘텀 3종(자산배분·멀티에셋·성장주)의 목표 비중을 평균 — "
+                       "짧은 표본으로 한 전략을 고르는 위험을 분산",
+        "type": "ensemble", "members": ["kr_asset_momentum", "kr_gem", "kr_growth"],
+        "top_n": 3, "min_seed": 3_000_000,
+    },
     "vaa_kr": {
         "name": "한국형 VAA 카나리아", "profile": "방어",
         "description": "정통 VAA(13612W+breadth) — 공격군(KOSPI200·S&P500·나스닥100·금) 위험 감지 시 국고채·단기채권 전량 도피, 무난하면 상위 2개 집중",
@@ -84,18 +91,18 @@ def list_strategies() -> list[dict]:
 def universe_for(key: str) -> list[str]:
     """해당 전략이 가격을 조회/보유하는 티커 목록."""
     s = get_strategy(key)
+    if s["type"] == "ensemble":
+        out: list[str] = []
+        for m in s["members"]:
+            out.extend(universe_for(m))
+        return list(dict.fromkeys(out))
     if s["type"] == "vaa":
         return list(dict.fromkeys(s["offensive"] + s["defensive"]))
     return list(dict.fromkeys(s["risk"] + [s["safe"], s["cash_proxy"]]))
 
 
-# 5개 전략 전체에서 봇이 관리(매수/매도)하는 티커 합집합 — 전략 전환 시 옛 보유 청산용.
-MANAGED_UNIVERSE = set()
-for _s in STRATEGIES.values():
-    if _s["type"] == "vaa":
-        MANAGED_UNIVERSE.update(_s["offensive"] + _s["defensive"])
-    else:
-        MANAGED_UNIVERSE.update(_s["risk"] + [_s["safe"], _s["cash_proxy"]])
+# 전 전략에서 봇이 관리(매수/매도)하는 티커 합집합 — 전략 전환 시 옛 보유 청산용.
+MANAGED_UNIVERSE = {tk for _k in STRATEGIES for tk in universe_for(_k)}
 
 
 def _close_series(ticker: str, start: str) -> pd.Series | None:
@@ -176,6 +183,38 @@ def _compute_vaa(spec: dict, closes: dict) -> dict[str, float]:
     return weights
 
 
+def _dispatch(spec: dict, closes: dict) -> dict[str, float]:
+    """전략 타입별 비중 계산 진입점 (백테스트도 이 함수를 쓴다)."""
+    if spec["type"] == "ensemble":
+        return _compute_ensemble(spec, closes)
+    if spec["type"] == "vaa":
+        return _compute_vaa(spec, closes)
+    return _compute_dual(spec, closes)
+
+
+def _compute_ensemble(spec: dict, closes: dict) -> dict[str, float]:
+    """구성 전략들의 목표 비중을 평균한다.
+
+    표본이 짧으면(ETF 상장일 제약) 백테스트 1등이 실제 1등이라는 보장이 없다.
+    여러 전략의 합의 비중을 담으면 '가장 나쁜 전략을 고를' 위험이 사라지고,
+    전략들이 공통으로 지목한 자산에 자연히 비중이 실린다.
+    """
+    parts = []
+    for key in spec["members"]:
+        sub = get_strategy(key)
+        w = _compute_vaa(sub, closes) if sub["type"] == "vaa" else _compute_dual(sub, closes)
+        if w:
+            parts.append(w)
+    # 데이터 장애 방어 — 과반이 계산되지 않으면 합의를 신뢰할 수 없다
+    if len(parts) < max(1, (len(spec["members"]) + 1) // 2):
+        return {}
+    merged: dict[str, float] = {}
+    for w in parts:
+        for tk, v in w.items():
+            merged[tk] = merged.get(tk, 0.0) + v / len(parts)
+    return merged
+
+
 def compute_target_weights(key: str = DEFAULT_KEY) -> list[dict]:
     """반환: [{ticker, name, weight(0~100), price}], weight 합계 ≈100."""
     from scanner.logger import log
@@ -186,7 +225,7 @@ def compute_target_weights(key: str = DEFAULT_KEY) -> list[dict]:
     start = (datetime.now() - timedelta(days=550)).strftime("%Y-%m-%d")
     closes = {tk: _close_series(tk, start) for tk in universe_for(key)}
 
-    max_lb = max(_BLEND_LOOKBACKS) if spec["type"] != "vaa" else max(_W13612)
+    max_lb = max(_W13612) if spec["type"] == "vaa" else max(_BLEND_LOOKBACKS)
     for tk, s in closes.items():
         if s is None:
             log.warning(f"[전략] {tk} 가격 데이터 없음 — 후보에서 제외")
@@ -194,7 +233,7 @@ def compute_target_weights(key: str = DEFAULT_KEY) -> list[dict]:
             log.warning(f"[전략] {tk} 데이터 {len(s)}건 (<{max_lb + 1}) — "
                         f"최장 모멘텀 구간 누락, 짧은 룩백만으로 판단됨")
 
-    weights = _compute_vaa(spec, closes) if spec["type"] == "vaa" else _compute_dual(spec, closes)
+    weights = _dispatch(spec, closes)
     if not weights:
         return []
 

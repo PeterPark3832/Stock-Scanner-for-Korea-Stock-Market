@@ -175,9 +175,21 @@ def _compute_vaa(spec: dict, closes: dict) -> dict[str, float]:
 
 def compute_target_weights(key: str = DEFAULT_KEY) -> list[dict]:
     """반환: [{ticker, name, weight(0~100), price}], weight 합계 ≈100."""
+    from scanner.logger import log
     spec = get_strategy(key)
-    start = (datetime.now() - timedelta(days=430)).strftime("%Y-%m-%d")
+    # 최장 룩백 252거래일(≈1년)을 항상 확보해야 한다. 거래일은 연 ~245일이므로
+    # 430일(≈288거래일)은 여유가 36일뿐이라, 휴장·데이터 결손이 조금만 겹쳐도
+    # 12개월 모멘텀이 조용히 빠진 채 다른 전략으로 매매하게 된다. 550일로 여유 확보.
+    start = (datetime.now() - timedelta(days=550)).strftime("%Y-%m-%d")
     closes = {tk: _close_series(tk, start) for tk in universe_for(key)}
+
+    max_lb = max(_BLEND_LOOKBACKS) if spec["type"] != "vaa" else max(_W13612)
+    for tk, s in closes.items():
+        if s is None:
+            log.warning(f"[전략] {tk} 가격 데이터 없음 — 후보에서 제외")
+        elif len(s) <= max_lb:
+            log.warning(f"[전략] {tk} 데이터 {len(s)}건 (<{max_lb + 1}) — "
+                        f"최장 모멘텀 구간 누락, 짧은 룩백만으로 판단됨")
 
     weights = _compute_vaa(spec, closes) if spec["type"] == "vaa" else _compute_dual(spec, closes)
     if not weights:

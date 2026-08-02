@@ -7,7 +7,9 @@ from datetime import datetime
 from scanner.strategy_rebalance import compute_target_weights, get_strategy, MANAGED_UNIVERSE
 from scanner.kis import get_account_holdings, get_order_possible_cash, get_current_price, place_order
 from scanner.positions import load_positions, save_positions
-from scanner.config import REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE, STRATEGY_KEY
+from scanner.config import (
+    REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE, STRATEGY_KEY, REBALANCE_CASH_BUFFER,
+)
 from scanner.state import _POSITIONS_FLOCK
 from scanner.calendar import KST
 from scanner.notify import send_telegram
@@ -43,7 +45,9 @@ def preview_rebalance() -> dict:
         tk, price = t["ticker"], t["price"]
         target_tickers.add(tk)
         cur_qty       = holdings.get(tk, {}).get("qty", 0)
-        target_dollar = total * t["weight"] / 100.0
+        # 버퍼 적용: 수량은 전일 종가 기준인데 체결은 당일 시가 → 갭상승 시 현금 부족으로
+        # 매수 전체가 실패하는 것을 막는다.
+        target_dollar = total * REBALANCE_CASH_BUFFER * t["weight"] / 100.0
         target_qty    = int(target_dollar // price) if price > 0 else 0
         rows.append({
             **t, "current_qty": cur_qty, "target_qty": target_qty,
@@ -95,7 +99,7 @@ def execute_rebalance() -> dict:
         results.append({"ticker": r["ticker"], "name": r["name"], "side": "buy",
                         "qty": r["diff_qty"], "price": price, "pnl_pct": None, **res})
 
-    _save_rebalance_positions(plan)
+    _reconcile_positions(plan, results)
     _record_rebalance_log(plan, results)
 
     ok = sum(1 for r in results if r["success"])
@@ -184,30 +188,73 @@ def _record_rebalance_log(plan: dict, results: list[dict]) -> None:
             log.error(f"[리밸런싱] 이력 기록 실패: {e}")
 
 
-def _save_rebalance_positions(plan: dict) -> None:
-    """positions.json에서 리밸런싱 관리(strategy 태그 보유) 레코드를 최신 목표 보유로 교체."""
-    from scanner.strategy_rebalance import STRATEGIES
+def _reconcile_positions(plan: dict, results: list[dict]) -> None:
+    """주문 후 실제 체결 결과로 positions.json을 맞춘다.
+
+    KIS 잔고를 다시 조회해 **실제 보유 수량과 매입평균가**로 기록한다. 목표(plan)를
+    그대로 저장하면 주문이 실패해도 보유한 것처럼 남아, 다음 달 주문 수량과 실현손익이
+    모두 어긋난다. 잔고 재조회가 실패하면 성공한 주문만 반영해 보수적으로 기록한다.
+    """
+    from scanner.strategy_rebalance import STRATEGIES, MANAGED_UNIVERSE
     now_str  = datetime.now(KST).strftime("%Y-%m-%d")
-    existing = [p for p in load_positions() if p.get("strategy") not in STRATEGIES]
-    for r in plan["rows"]:
-        if r["target_qty"] <= 0:
+    keep     = [p for p in load_positions() if p.get("strategy") not in STRATEGIES]
+    weights  = {r["ticker"]: r.get("weight", 0.0) for r in plan["rows"]}
+    prev     = {p["ticker"]: p for p in load_positions() if p.get("strategy") in STRATEGIES}
+
+    live = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in MANAGED_UNIVERSE}
+    if live:
+        for tk, h in live.items():
+            keep.append(_position_record(
+                tk, h.get("name") or tk, h.get("avg_price", 0), h.get("qty", 0),
+                weights.get(tk, 0.0),
+                prev.get(tk, {}).get("entry_date", now_str) if tk in prev else now_str,
+            ))
+        save_positions(keep)
+        log.info(f"[리밸런싱] 실제 잔고로 포지션 동기화 — {len(live)}종목")
+        return
+
+    # 잔고 재조회 실패 → 성공한 주문만 반영 (실패 주문을 보유로 남기지 않는다)
+    filled: dict[str, int] = {}
+    for r in results:
+        if not r.get("success"):
             continue
-        existing.append({
-            "ticker":          r["ticker"],
-            "name":            r["name"],
-            "entry":           r["price"],
-            "tp":              0,
-            "sl":              0,
-            "sl_init":         0,
-            "high_water_mark": r["price"],
-            "entry_date":      now_str,
-            "sector":          "ETF",
-            "signal_score":    None,
-            "bo_lookback":     None,
-            "pullback_depth":  None,
-            "quantity":        r["target_qty"],
-            "auto_traded":     True,
-            "strategy":        STRATEGY_KEY,
-            "target_weight":   r["weight"],
-        })
-    save_positions(existing)
+        d = r["qty"] if r["side"] == "buy" else -r["qty"]
+        filled[r["ticker"]] = filled.get(r["ticker"], 0) + d
+    fill_price = {r["ticker"]: r.get("price", 0) for r in results if r.get("success")}
+    log.warning("[리밸런싱] 잔고 재조회 실패 — 성공 주문 기준으로 포지션 기록")
+
+    for r in plan["rows"]:
+        tk  = r["ticker"]
+        qty = r["current_qty"] + filled.get(tk, 0)
+        if qty <= 0:
+            continue
+        entry = fill_price.get(tk) or prev.get(tk, {}).get("entry") or r["price"]
+        keep.append(_position_record(
+            tk, r["name"], entry, qty, r.get("weight", 0.0),
+            prev.get(tk, {}).get("entry_date", now_str) if tk in prev else now_str,
+        ))
+    save_positions(keep)
+
+
+def _position_record(ticker: str, name: str, entry, qty: int,
+                     weight: float, entry_date: str) -> dict:
+    """리밸런싱 보유 1건의 positions.json 레코드. TP/SL은 리밸런싱 전략에서 미사용(0)."""
+    entry = int(entry or 0)
+    return {
+        "ticker":          ticker,
+        "name":            name,
+        "entry":           entry,
+        "tp":              0,
+        "sl":              0,
+        "sl_init":         0,
+        "high_water_mark": entry,
+        "entry_date":      entry_date,
+        "sector":          "ETF",
+        "signal_score":    None,
+        "bo_lookback":     None,
+        "pullback_depth":  None,
+        "quantity":        int(qty),
+        "auto_traded":     True,
+        "strategy":        STRATEGY_KEY,
+        "target_weight":   weight,
+    }

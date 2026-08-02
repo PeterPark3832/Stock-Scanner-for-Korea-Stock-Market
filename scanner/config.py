@@ -30,6 +30,11 @@ STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(
 STRATEGY_KEY   = os.getenv("STRATEGY_KEY", "kr_gem")              # 리밸런싱 전략 (strategy_rebalance.STRATEGIES)
 REBALANCE_TIME = os.getenv("REBALANCE_TIME", "09:05")
 
+# 매수 여력 버퍼 — 목표금액을 총자산의 이 비율로 계산한다.
+# 수량은 전일 종가로 산출하는데 체결은 당일 시가라, 갭상승 시 주문금액이 현금을 넘어
+# "주문가능금액 부족"으로 매수가 통째로 실패한다(= 그 달 미투자). 0.5% 여유로 방지.
+REBALANCE_CASH_BUFFER = float(os.getenv("REBALANCE_CASH_BUFFER", "0.995"))
+
 _KIS_MODE = os.getenv("KIS_MODE", "paper").lower()
 KIS_BASE_URL = (
     "https://openapi.koreainvestment.com:9443"

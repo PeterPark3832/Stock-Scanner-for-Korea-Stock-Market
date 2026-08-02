@@ -65,7 +65,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 179개 테스트 전체 통과 확인
+# 186개 테스트 전체 통과 확인
 ```
 
 ---
@@ -79,7 +79,7 @@ python -m pytest tests/ -q
 | 변수 | 기본값 | 설명 |
 |------|--------|------|
 | `STRATEGY_MODE` | `rebalance` | `rebalance`=월간 리밸런싱 / `breakout`=눌림목 |
-| `STRATEGY_KEY` | `kr_gem` | 리밸런싱 전략: `kr_asset_momentum` `kr_gem` `kr_growth` `kr_leaders` `vaa_kr` |
+| `STRATEGY_KEY` | `kr_gem` | 리밸런싱 전략: `kr_asset_momentum` `kr_gem` `kr_growth` `kr_leaders` `vaa_kr` `kr_ensemble` |
 | `REBALANCE_TIME` | `09:05` | 첫 거래일 자동 리밸런싱 실행 시각 |
 | `STRATEGY_REVIEW_DAY` | `25` | 매월 전략 리뷰 리포트 발송일 (0=비활성) |
 | `STRATEGY_REVIEW_TIME` | `18:00` | 전략 리뷰 발송 시각 |
@@ -160,10 +160,14 @@ python -m pytest tests/ -q
 | `kr_gem` | 한국·미국 멀티에셋 | 밸런스 | KOSPI200·S&P·나스닥100·금·반도체 | 3 |
 | `kr_growth` | 한국·미국 성장주 | 공격 | 코스닥150·KOSPI200·나스닥100·S&P·반도체 | 3 |
 | `kr_leaders` | 한국 주도주 | 공격 | 삼성전자·SK하이닉스 등 대형주 10종 | 4 |
+| `kr_ensemble` | 멀티전략 앙상블 | 밸런스 | 듀얼모멘텀 3종의 목표 비중 평균 | — |
 | `vaa_kr` | 한국형 VAA 카나리아 | 방어 | 공격 4종 + 방어 2종 (13612W) | 2 |
 
 - 듀얼 모멘텀 4종: 3/6/12개월 수익률 평균 상위 TOP-N 동일비중, 단기채권 모멘텀 미달 슬롯은 국고채 3년으로 도피
 - VAA: 공격군 음수 모멘텀 감지 시 방어자산(국고채·단기채권) 전량 도피
+- 앙상블: 자산배분·멀티에셋·성장주의 비중을 평균 — 여러 전략이 공통으로 지목한 자산에
+  비중이 실린다(3/3 지목 33.3% · 2/3 22.2% · 1/3 11.1%). 표본이 짧아 '1등 전략'을
+  확신할 수 없을 때 **가장 나쁜 전략을 고를 위험**을 없애는 선택지
 - 전략 변경: 대시보드 '리밸런싱' 탭 → 전략 변경 (다음 리밸런싱부터 적용)
 
 눌림목 전략 파라미터 근거 → [`STRATEGY.md`](STRATEGY.md)
@@ -193,6 +197,9 @@ python backtest_rebalance.py --slippage 0.003
 
 리포트 해석 순서:
 
+0. **선택 자체가 부담되면 `kr_ensemble`** — 한 전략을 고르지 않고 3종 비중을 평균해
+   '최악을 고를 위험'을 없앱니다. 다만 보유 종목이 늘어 소액 계좌에선 정수 주수
+   드래그가 커지므로, 리포트에서 본인 시드 기준 성과를 확인하세요.
 1. **연도별 수익률** — 특정 해에만 몰린 전략은 과최적화 위험. 고르게 양호한 쪽을 우선.
 2. **Calmar(= CAGR ÷ MDD)** — 총수익만 보고 고르면 감당 못 할 낙폭을 떠안습니다.
 3. **벤치마크 초과 여부** — KOSPI200 단순 보유를 못 이기면 전략을 쓸 이유가 없습니다.
@@ -238,7 +245,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (179개)
+├── tests/                     # pytest 테스트 (186개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트

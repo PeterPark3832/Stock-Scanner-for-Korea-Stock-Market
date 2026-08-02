@@ -65,7 +65,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 155개 테스트 전체 통과 확인
+# 162개 테스트 전체 통과 확인
 ```
 
 ---
@@ -229,7 +229,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (155개)
+├── tests/                     # pytest 테스트 (162개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트

@@ -1,5 +1,26 @@
 # 변경 이력
 
+## v5.1 (2026-06~07) — 월간 리밸런싱 모드 전환 (현행)
+
+### 전략
+- `STRATEGY_MODE=rebalance` 신설 및 기본값 지정 — 눌림목은 `breakout` 레거시 모드로 유지
+- SeedNGrow KR 5종 전략 포팅 (`scanner/strategy_rebalance.py`):
+  듀얼모멘텀 4종(자산배분·kr_gem·성장주·주도주) + VAA 카나리아(13612W)
+- 매월 첫 거래일 `REBALANCE_TIME`(기본 09:05) 자동 실행 + 대시보드 수동 실행
+- 장마감 15:40 평가금액 스냅샷, 입출금 보정 TWR, KOSPI200 알파 비교
+- KIS 잔고조회 간헐 실패 시 0원 스냅샷 방지 가드, 매도 실현손익 전략 무관 계산
+
+### 대시보드
+- Robinhood 스타일 리디자인 (Satoshi 폰트, #00C805/#F0463A 손익 색, 히어로 위계)
+- 포트폴리오·리밸런싱 미리보기/실행·리밸런싱 내역·입출금 기록·전략 변경 UI
+- `DASHBOARD_TOKEN` 필수화(20자 이상) — 하드코딩 기본 토큰 제거
+- UI 전수 점검 2회 (`UI_CHECKLIST.md`) — 모달 폭·하드코딩·죽은 CSS 등 수정
+
+### 품질
+- 리밸런싱 코어 테스트 신설 (전략 엔진 23건 + 잡 12건) — 총 130개 통과
+- requirements.txt에 fastapi·uvicorn 보완, 개인 런타임 데이터 .gitignore 등록
+- README·.env.example 리밸런싱 기준으로 갱신
+
 ## v5.1 — 신호 빈도 복원 (필터 재조정)
 
 ### 문제 진단

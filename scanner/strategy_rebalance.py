@@ -72,6 +72,47 @@ STRATEGIES: dict[str, dict] = {
     },
 }
 
+# ── 과세 구분 (일반 위탁계좌 기준) ──────────────────────────────────
+# 국내 '주식형' ETF: 매매차익 비과세.
+# 그 외 국내상장 ETF(해외지수·원자재·채권): 매매차익에 배당소득세 15.4% (보유기간과세).
+# → 세전 수익률이 같아도 세후 수익은 크게 갈린다. 전략은 세전 모멘텀만 보므로
+#   과세 비중이 높은 구성이 나오면 실제 손에 쥐는 돈이 줄어든다.
+# 주의: ISA·연금저축 계좌는 과세 체계가 다르고, 세법은 바뀔 수 있다(추정치로만 사용).
+TAX_RATE_OTHER_ETF = 0.154
+TAX_FREE_TICKERS = {
+    "069500",  # KODEX 200 — 국내주식형
+    "229200",  # KODEX 코스닥150 — 국내주식형
+    "091160",  # KODEX 반도체 — 국내주식형
+    # 개별 국내주식(kr_leaders)은 대주주가 아니면 양도차익 비과세
+    "005930", "000660", "005380", "035420", "051910",
+    "006400", "207940", "068270", "105560", "012330",
+}
+
+
+def is_tax_free(ticker: str) -> bool:
+    """매매차익 비과세 대상인지 (일반 위탁계좌 기준)."""
+    return ticker in TAX_FREE_TICKERS
+
+
+def tax_profile(weights: dict[str, float]) -> dict:
+    """목표/보유 비중의 과세 구조. weights는 {ticker: 비중(0~100)}.
+
+    반환: taxable_pct(과세 비중), effective_rate(비중가중 실효세율),
+          drag_per_10pct(세전 10% 수익 시 세금으로 나가는 %p)
+    """
+    total = sum(weights.values())
+    if total <= 0:
+        return {"taxable_pct": 0.0, "effective_rate": 0.0, "drag_per_10pct": 0.0}
+    taxable = sum(w for tk, w in weights.items() if not is_tax_free(tk))
+    taxable_pct = taxable / total * 100
+    eff = taxable_pct / 100 * TAX_RATE_OTHER_ETF
+    return {
+        "taxable_pct": round(taxable_pct, 1),
+        "effective_rate": round(eff * 100, 2),
+        "drag_per_10pct": round(10.0 * eff, 2),
+    }
+
+
 DEFAULT_KEY = "kr_gem"
 _BLEND_LOOKBACKS = (63, 126, 252)          # 3/6/12개월
 _W13612 = {21: 12.0, 63: 4.0, 126: 2.0, 252: 1.0}

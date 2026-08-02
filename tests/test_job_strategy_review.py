@@ -93,6 +93,34 @@ class TestBuildReview:
     def test_empty_results_is_graceful(self):
         assert "실패" in build_review([], "kr_gem")
 
+    def test_is_pure_no_network(self, monkeypatch):
+        """리포트 생성이 KIS 조회에 묶이면 안 된다(느려지고 장애에 취약해짐)."""
+        import scanner.job_rebalance as jr
+
+        def boom(*a, **k):
+            raise AssertionError("build_review가 네트워크를 호출함")
+
+        monkeypatch.setattr(jr, "get_account_holdings", boom)
+        monkeypatch.setattr(jr, "get_current_price", boom)
+        build_review([mk("kr_gem", "멀티에셋", 10.0, -20.0, 0.50)], "kr_gem")
+
+
+class TestTaxNote:
+    RES = [mk("kr_gem", "멀티에셋", 10.0, -20.0, 0.50)]
+
+    def test_omitted_when_unknown(self):
+        assert "세금" not in build_review(self.RES, "kr_gem", None)
+
+    def test_shows_drag_when_taxable(self):
+        tax = {"taxable_pct": 66.7, "effective_rate": 10.3, "drag_per_10pct": 1.03}
+        msg = build_review(self.RES, "kr_gem", tax)
+        assert "세금" in msg and "1.0%p" in msg
+        assert "ISA" in msg, "절세 계좌 안내가 있어야 실제 조치로 이어진다"
+
+    def test_notes_when_fully_tax_free(self):
+        tax = {"taxable_pct": 0.0, "effective_rate": 0.0, "drag_per_10pct": 0.0}
+        assert "비과세" in build_review(self.RES, "kr_gem", tax)
+
     def test_message_fits_telegram_limit(self):
         results = [mk(f"s{i}", f"전략{i}" * 3, 10.0 + i, -20.0, 0.5) for i in range(5)]
         results.append(mk("069500", "KOSPI200", 8.0, -25.0, 0.32, bh=True))

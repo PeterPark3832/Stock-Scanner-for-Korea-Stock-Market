@@ -37,8 +37,12 @@ def _pad(s: str, width: int) -> str:
     return "".join(out) + " " * (width - used)
 
 
-def build_review(results: list[dict], current_key: str) -> str:
-    """백테스트 결과 리스트 → 텔레그램 메시지. 순수 함수(테스트 가능)."""
+def build_review(results: list[dict], current_key: str, tax: dict | None = None) -> str:
+    """백테스트 결과 → 텔레그램 메시지. 순수 함수(네트워크 접근 없음).
+
+    tax: tax_profile() 결과. 호출부에서 계산해 넘긴다(여기서 조회하면 테스트가 느려지고
+         리포트 생성이 KIS 장애에 묶인다).
+    """
     strat = [r for r in results if not r["key"].startswith("bh_")]
     bench = next((r for r in results if r["key"].startswith("bh_")), None)
     if not strat:
@@ -71,11 +75,50 @@ def build_review(results: list[dict], current_key: str) -> str:
         tot = sum(1 for v in cur["yearly"] if v == v)
         lines.append(f"현재 전략 *{cur['name']}*: 연간 플러스 {pos}/{tot}년")
 
+    note = _tax_note(tax)
+    if note:
+        lines.append(note)
+
     lines.append(_verdict(cur, best, bench, years))
     lines.append("")
     lines.append("_전략 교체는 대시보드 '리밸런싱 → 전략 변경'에서 직접 하세요._")
     lines.append("_최근 성과만 보고 자주 바꾸면 매매비용만 늘어납니다._")
     return "\n".join(lines)
+
+
+def current_tax_profile() -> dict | None:
+    """현재 보유의 과세 구조를 조회한다(네트워크 접근 — 호출부에서만 사용)."""
+    try:
+        from scanner.job_rebalance import _current_state, _live_prices
+        from scanner.strategy_rebalance import tax_profile
+        holdings, _ = _current_state()
+        if not holdings:
+            return None
+        live = _live_prices(list(holdings))
+        vals = {tk: (live.get(tk) or h.get("avg_price", 0)) * h.get("qty", 0)
+                for tk, h in holdings.items()}
+        if sum(vals.values()) <= 0:
+            return None
+        return tax_profile(vals)
+    except Exception:
+        return None
+
+
+def _tax_note(t: dict | None) -> str | None:
+    """현재 보유의 과세 구조 — 전략이 세전 모멘텀만 보므로 세후 손실이 안 보인다.
+
+    수수료·스프레드(연 0.x%)보다 세금(차익의 15.4%)이 훨씬 큰 비용인데도 어디에도
+    표시되지 않아, 계좌 종류를 바꾸면 얻을 수 있는 큰 이득이 방치된다.
+    """
+    if not t:
+        return None
+    if t["taxable_pct"] <= 0:
+        return "\n🟢 현재 보유는 전액 매매차익 비과세 구성입니다."
+    return (f"\n💸 *세금* 과세 대상 보유 {t['taxable_pct']:.0f}% "
+            f"(실효 {t['effective_rate']:.1f}%)\n"
+            f"세전 10% 수익 시 약 *{t['drag_per_10pct']:.1f}%p*가 세금으로 나갑니다.\n"
+            f"→ 해외지수·금·채권 ETF는 차익의 15.4% 과세(국내주식형은 비과세). "
+            f"ISA·연금저축 계좌를 쓰면 상당 부분 줄일 수 있습니다.")
 
 
 def _verdict(cur: dict | None, best: dict, bench: dict | None, years: float) -> str:
@@ -136,7 +179,7 @@ def job_strategy_review(seed: int | None = None) -> str | None:
         if b:
             results.append(b)
 
-    msg = build_review(results, STRATEGY_KEY)
+    msg = build_review(results, STRATEGY_KEY, current_tax_profile())
     send_telegram(msg)
     log.info("[전략리뷰] 발송 완료")
     return msg

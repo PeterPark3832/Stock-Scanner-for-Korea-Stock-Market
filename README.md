@@ -65,7 +65,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 162개 테스트 전체 통과 확인
+# 179개 테스트 전체 통과 확인
 ```
 
 ---
@@ -81,6 +81,8 @@ python -m pytest tests/ -q
 | `STRATEGY_MODE` | `rebalance` | `rebalance`=월간 리밸런싱 / `breakout`=눌림목 |
 | `STRATEGY_KEY` | `kr_gem` | 리밸런싱 전략: `kr_asset_momentum` `kr_gem` `kr_growth` `kr_leaders` `vaa_kr` |
 | `REBALANCE_TIME` | `09:05` | 첫 거래일 자동 리밸런싱 실행 시각 |
+| `STRATEGY_REVIEW_DAY` | `25` | 매월 전략 리뷰 리포트 발송일 (0=비활성) |
+| `STRATEGY_REVIEW_TIME` | `18:00` | 전략 리뷰 발송 시각 |
 | `REBALANCE_CASH_BUFFER` | `0.995` | 매수 여력 버퍼 — 체결가 변동으로 인한 주문 실패 방지 |
 
 ### 텔레그램
@@ -119,6 +121,7 @@ python -m pytest tests/ -q
 | 09:00 | Heartbeat — 평가금액·생존신호 (월요일: 주간 리포트) |
 | 09:05 | 매월 첫 거래일에만 자동 리밸런싱 실행 (`REBALANCE_TIME`) |
 | 15:40 | 장마감 평가금액 스냅샷 (TWR·그래프용) |
+| 매월 25일 18:00 | 전략 리뷰 — 5종 백테스트 비교를 텔레그램으로 발송 |
 | 수시 | 대시보드 '리밸런싱' 탭에서 수동 실행 가능 |
 
 ### 눌림목 모드
@@ -141,6 +144,7 @@ python -m pytest tests/ -q
 |--------|------|
 | `/positions` | 보유 포지션 전종목 실시간 PnL |
 | `/report` | 누적 성과 + 최근 5건 거래 |
+| `/review` | 전략 5종 백테스트 비교 리포트 즉시 실행 |
 | `/stats` | 최근 스크리닝 필터 통계 (눌림목 모드) |
 | `/autotrade on·off` | 자동매매 토글 |
 | `/pause` `/resume` | 신규 신호 발송 중지/재개 (눌림목 모드) |
@@ -171,6 +175,10 @@ python -m pytest tests/ -q
 전략 5종은 성향이 다르므로 **어느 것을 쓰느냐가 수익에 가장 크게 작용**합니다.
 `backtest_rebalance.py`는 실제 봇이 쓰는 계산 함수(`_compute_dual`/`_compute_vaa`)를
 그대로 호출하므로, 여기서 나온 성과는 봇이 낼 성과와 동일합니다.
+
+**봇이 매월 자동으로 비교해 보내줍니다** — 매월 25일 18:00에 5종 비교 리포트가
+텔레그램으로 오고, `/review`로 즉시 실행할 수도 있습니다. 아래는 직접 돌려보고
+싶을 때의 방법입니다.
 
 ```bash
 # 전 전략 비교 (FDR 접근 가능한 운영 서버에서 실행)
@@ -214,6 +222,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── config.py              # 전략 파라미터 + 환경변수
 │   ├── strategy_rebalance.py  # 리밸런싱 전략 5종 — 목표비중 계산
 │   ├── job_rebalance.py       # 월간 리밸런싱 실행·평가금액 스냅샷
+│   ├── job_strategy_review.py # 전략 5종 자동 백테스트 비교 리포트
 │   ├── job_heartbeat.py       # 09:00 생존신호
 │   ├── job_screener.py        # (눌림목) 1차·2차 스크리닝
 │   ├── job_monitor.py         # (눌림목) TP/SL·갭오픈 체크
@@ -229,7 +238,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (162개)
+├── tests/                     # pytest 테스트 (179개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트

@@ -123,6 +123,28 @@ class TestPreviewRebalance:
         assert "005930" in holdings              # kr_leaders 유니버스 포함 종목
 
 
+class TestWaitForCash:
+    def test_returns_as_soon_as_cash_available(self, monkeypatch):
+        seq = iter([100, 100, 5_000])
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: next(seq))
+        monkeypatch.setattr(jr.time, "sleep", lambda s: None)
+        assert jr._wait_for_cash(1_000, before=0, timeout=30, interval=0) >= 1_000
+
+    def test_times_out_without_blocking_forever(self, monkeypatch):
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 0)
+        monkeypatch.setattr(jr.time, "sleep", lambda s: None)
+        clock = iter([0, 1, 2, 3, 99, 99, 99])
+        monkeypatch.setattr(jr.time, "time", lambda: next(clock))
+        assert jr._wait_for_cash(1_000, before=0, timeout=5, interval=0) == 0
+
+    def test_tolerates_query_failure(self, monkeypatch):
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: None)
+        monkeypatch.setattr(jr.time, "sleep", lambda s: None)
+        clock = iter([0, 1, 2, 99, 99, 99])
+        monkeypatch.setattr(jr.time, "time", lambda: next(clock))
+        assert jr._wait_for_cash(1_000, before=777, timeout=5, interval=0) == 777
+
+
 class TestDataOutageGuard:
     """회귀 방지: 시세 데이터 장애가 '전량 청산'으로 이어지면 안 된다."""
 

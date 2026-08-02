@@ -46,6 +46,28 @@ def _total_value(holdings: dict[str, dict], cash: int,
     return total
 
 
+def _wait_for_cash(needed: float, before: int, timeout: int = 20, interval: int = 2) -> int:
+    """매도 대금이 주문가능금액에 반영될 때까지 대기 (고정 sleep 대신 실제 확인).
+
+    체결 전에 매수를 내면 '주문가능금액 부족'으로 실패해, 판 돈이 한 달간 현금으로
+    남는다. 필요한 금액이 확보되면 즉시 진행하고, timeout까지 안 되면 그대로 시도한다.
+    """
+    deadline = time.time() + timeout
+    cash = before
+    while time.time() < deadline:
+        time.sleep(interval)
+        cur = get_order_possible_cash("", 0)
+        if cur is None:
+            continue
+        cash = cur
+        if cash >= needed:
+            log.info(f"[리밸런싱] 매도대금 반영 확인 — 주문가능 {cash:,}원 (필요 {int(needed):,}원)")
+            return cash
+    log.warning(f"[리밸런싱] 매도대금 반영 대기 시간 초과 — 주문가능 {cash:,}원 "
+                f"(필요 {int(needed):,}원). 일부 매수가 실패할 수 있음")
+    return cash
+
+
 def _sweep_leftover_cash(rows: list[dict], budget: float) -> None:
     """정수 주수로 남은 잔돈을 가장 미달된 종목에 추가 배정한다(제자리 수정).
 
@@ -155,8 +177,9 @@ def execute_rebalance() -> dict:
         results.append({"ticker": r["ticker"], "name": r["name"], "side": "sell",
                         "qty": -r["diff_qty"], "price": price, "pnl_pct": pnl, **res})
 
-    if sells:
-        time.sleep(3)  # 매도 체결 대기 — 현금 확보 후 매수
+    if sells and buys:
+        need = sum(r["diff_qty"] * r["price"] for r in buys)
+        _wait_for_cash(need, plan["cash"])
 
     for r in buys:
         res = place_order(r["ticker"], "buy", r["diff_qty"], r["name"])

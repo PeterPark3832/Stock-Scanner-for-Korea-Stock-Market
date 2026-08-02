@@ -4,7 +4,7 @@ import requests
 
 from scanner.config import (
     KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, KIS_ACCOUNT_NO,
-    TRADE_AMOUNT_PER_STOCK, _KIS_MODE, STRATEGY,
+    _KIS_MODE, STRATEGY,
     _TR_BUY, _TR_SELL, _TR_BAL,
 )
 from scanner import state

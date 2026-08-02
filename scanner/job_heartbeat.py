@@ -3,7 +3,7 @@ import csv
 import time
 from datetime import datetime
 
-from scanner.config import TRADE_HISTORY_FILE, STRATEGY, STRATEGY_MODE
+from scanner.config import TRADE_HISTORY_FILE, STRATEGY_MODE
 from scanner import state
 from scanner.notify import send_telegram, _esc, order_result_tag
 from scanner.positions import check_expired_positions, save_positions

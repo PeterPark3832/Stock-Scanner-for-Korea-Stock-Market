@@ -4,13 +4,12 @@ from datetime import datetime
 
 from scanner.config import TRADE_AMOUNT_PER_STOCK
 from scanner import state
-from scanner.notify import send_telegram, _esc
+from scanner.notify import send_telegram
 from scanner.positions import load_positions
 from scanner.history import load_trade_history
 from scanner.performance import calc_performance_stats, format_weekly_report
 from scanner.kis import get_current_price, _parse_account
 from scanner.calendar import KST
-from scanner.logger import log
 
 
 def _cmd_positions() -> None:

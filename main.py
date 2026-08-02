@@ -13,12 +13,12 @@ import schedule
 from scanner.logger import log, setup_logger
 from scanner.config import (
     STRATEGY, KIS_ACCOUNT_NO, TRADE_AMOUNT_PER_STOCK,
-    _KIS_MODE, _AUTO_TRADE_INIT, TELEGRAM_CHAT_IDS,
+    _KIS_MODE, TELEGRAM_CHAT_IDS,
     STRATEGY_MODE, REBALANCE_TIME,
 )
 from scanner import state
 from scanner.notify import send_telegram
-from scanner.calendar import KST, is_market_closed, is_first_trading_day_of_month
+from scanner.calendar import KST, is_first_trading_day_of_month
 from scanner.kis import sync_kis_holdings
 
 from scanner.job_heartbeat   import job_heartbeat

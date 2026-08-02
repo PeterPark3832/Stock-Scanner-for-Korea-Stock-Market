@@ -5,9 +5,7 @@ try:
 except ImportError:
     fdr = None  # type: ignore[assignment]
 
-from scanner.config import STRATEGY
 from scanner.logger import log
-from scanner.fdr import fdr_data_reader
 
 
 def calc_rsi(close: pd.Series, period: int = 14) -> pd.Series:

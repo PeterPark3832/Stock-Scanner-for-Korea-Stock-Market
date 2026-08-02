@@ -28,7 +28,33 @@ _AUTO_TRADE_INIT = os.getenv("AUTO_TRADE", "false").lower() == "true"
 
 STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(ETF/모멘텀) | "breakout"(눌림목)
 STRATEGY_KEY   = os.getenv("STRATEGY_KEY", "kr_gem")              # 리밸런싱 전략 (strategy_rebalance.STRATEGIES)
-REBALANCE_TIME = os.getenv("REBALANCE_TIME", "09:05")
+# 리밸런싱 체결 시각.
+# 09:05가 아닌 10:00이 기본인 이유 — 백테스트가 아니라 시장 구조로 결정된다:
+#   · 국내 ETF의 유동성공급자(LP)는 장 개시 후 5분간 호가 제출 의무가 면제된다.
+#     즉 09:00~09:05 구간은 LP 호가가 없거나 얇아 스프레드가 크게 벌어진다.
+#   · 09:05 직후에도 호가가 채워지는 중이라, 거래대금이 적은 ETF
+#     (나스닥100·금·반도체 등)는 시장가 주문이 불리한 가격에 체결되기 쉽다.
+#   · 이 봇은 시장가(ORD_DVSN=01)로 주문하므로 스프레드를 그대로 부담한다.
+# 월 1회 주문이라 몇 시간 늦게 담아도 전략 성격은 바뀌지 않는 반면,
+# 스프레드 손실은 매달 확정적으로 발생하므로 유동성이 회복된 시간대를 쓴다.
+REBALANCE_TIME = os.getenv("REBALANCE_TIME", "10:00")
+
+# 개장 직후(LP 호가 의무 면제) 구간 — 이 시간대로 설정하면 경고한다.
+_THIN_LIQUIDITY_UNTIL = "09:10"
+
+
+def rebalance_time_warning() -> str | None:
+    """REBALANCE_TIME이 개장 직후 저유동성 구간이면 경고 문구를 돌려준다."""
+    try:
+        hh, mm = (int(x) for x in REBALANCE_TIME.split(":")[:2])
+    except (ValueError, TypeError):
+        return f"REBALANCE_TIME 형식이 잘못되었습니다: {REBALANCE_TIME!r} (HH:MM)"
+    minutes = hh * 60 + mm
+    lo, hi = 9 * 60, 9 * 60 + 10
+    if lo <= minutes <= hi:
+        return (f"REBALANCE_TIME={REBALANCE_TIME} — 개장 직후는 ETF LP 호가 의무가 "
+                f"면제·회복 중인 구간이라 시장가 체결이 불리합니다. 10:00 이후 권장.")
+    return None
 
 # 매수 여력 버퍼 — 목표금액을 총자산의 이 비율로 계산한다.
 # 수량은 전일 종가로 산출하는데 체결은 당일 시가라, 갭상승 시 주문금액이 현금을 넘어

@@ -187,6 +187,13 @@ if __name__ == "__main__":
             "예: KIS_ACCOUNT_NO=50071234-01"
         )
 
+    if STRATEGY_MODE == "rebalance":
+        from scanner.config import rebalance_time_warning
+        _warn = rebalance_time_warning()
+        if _warn:
+            log.warning(f"⚠️  {_warn}")
+            send_telegram(f"⚠️ *체결 시각 주의*\n{_warn}")
+
     schedule.every().day.at("09:00", "Asia/Seoul").do(lambda: _safe_run(job_heartbeat, "Heartbeat"))
 
     if STRATEGY_MODE == "rebalance":

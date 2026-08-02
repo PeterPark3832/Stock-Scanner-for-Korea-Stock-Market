@@ -61,13 +61,15 @@ class TestPreviewRebalance:
         gap_up_price = 10_000 * 1.004          # 개장 갭 +0.4%
         assert qty * gap_up_price <= 1_000_000, "갭상승 시 주문금액이 현금 초과 → 매수 실패"
 
-    def test_zero_price_target_is_zero_qty(self, monkeypatch):
+    def test_zero_price_target_aborts_instead_of_ordering_zero(self, monkeypatch):
+        """가격을 못 구하면 수량을 정할 수 없다 → 0주 주문이 아니라 계획 자체를 중단."""
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
             {"ticker": "114260", "name": "국고채", "weight": 100.0, "price": 0.0},
         ])
         monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
         plan = jr.preview_rebalance()
-        assert plan["rows"][0]["target_qty"] == 0
+        assert plan["actionable"] is False
+        assert plan["rows"] == []
 
     def test_removed_holding_marked_full_sell(self, monkeypatch):
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
@@ -119,6 +121,56 @@ class TestPreviewRebalance:
         holdings, cash = jr._current_state()
         assert "999999" not in holdings          # 유니버스 밖 → 무시
         assert "005930" in holdings              # kr_leaders 유니버스 포함 종목
+
+
+class TestDataOutageGuard:
+    """회귀 방지: 시세 데이터 장애가 '전량 청산'으로 이어지면 안 된다."""
+
+    HELD = [{"ticker": "069500", "name": "K200", "qty": 100, "avg_price": 10_000},
+            {"ticker": "133690", "name": "나스닥100", "qty": 50, "avg_price": 20_000}]
+
+    def test_no_targets_yields_unactionable_plan(self, monkeypatch):
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: self.HELD)
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is False
+        assert plan["rows"] == [], "빈 목표인데 매도 행이 생성됨 — 전량 청산 위험"
+
+    def test_execute_places_no_orders_on_outage(self, monkeypatch):
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: self.HELD)
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
+        placed, sent = [], []
+        monkeypatch.setattr(jr, "place_order", lambda *a, **k: placed.append(a))
+        monkeypatch.setattr(jr, "send_telegram", lambda m: sent.append(m))
+        saved = []
+        monkeypatch.setattr(jr, "save_positions", lambda arr: saved.append(arr))
+        res = jr.execute_rebalance()
+        assert res["aborted"] is True
+        assert placed == [], "장애 상황에서 주문이 나감"
+        assert saved == [], "장애 상황에서 포지션이 덮어써짐"
+        assert sent and "중단" in sent[0]
+
+    def test_unpriced_target_aborts(self, monkeypatch):
+        """목표는 나왔지만 체결가를 못 구하면 수량을 못 정하므로 중단."""
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
+            {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 0.0},
+        ])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: self.HELD)
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: None)
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is False
+        assert "체결가" in plan["reason"]
+
+    def test_normal_plan_stays_actionable(self, monkeypatch):
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
+            {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
+        ])
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is True and plan["rows"]
 
 
 class TestLeftoverCashSweep:

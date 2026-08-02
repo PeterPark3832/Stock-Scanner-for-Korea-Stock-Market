@@ -453,20 +453,35 @@ def api_rebalance(token: str = ""):
         targets = _cached_targets(read_env("STRATEGY_KEY", "kr_gem"))
     except Exception as e:
         return JSONResponse({"ok": False, "msg": f"전략 계산 실패: {e}"}, status_code=500)
+    # 봇의 실제 주문 계산과 동일한 규칙을 쓴다(버퍼·잔돈 스윕). 미리보기와 실제 주문이
+    # 다르면 사용자가 잘못된 계획을 보고 판단하게 된다.
+    from scanner.config import REBALANCE_CASH_BUFFER
+    from scanner.job_rebalance import _sweep_leftover_cash
+
     snap = _portfolio_snapshot()
+    if not targets:
+        # 데이터 장애 — 빈 목표로 표를 그리면 보유 전량이 '매도'로 보여 오해를 부른다.
+        return JSONResponse({"ok": False,
+                             "msg": "가격 데이터 부족으로 목표 비중을 산출할 수 없습니다. "
+                                    "잠시 후 다시 시도하세요 (리밸런싱은 자동 중단됩니다)."},
+                            status_code=503)
     held = {h["ticker"]: h for h in snap["holdings"]}
+    budget = snap["total"] * REBALANCE_CASH_BUFFER
     rows = []
     target_tickers = set()
     for t in targets:
         target_tickers.add(t["ticker"])
         h = held.get(t["ticker"])
         cur_qty   = h["qty"] if h else 0
-        cur_price = h["price"] if h else (get_price(t["ticker"]) or {}).get("current", 0)
+        # 사이징은 봇과 동일하게 실시간가 우선(FDR 종가는 폴백)
+        live      = h["price"] if h else (get_price(t["ticker"]) or {}).get("current", 0)
+        price     = live or t["price"]
         cur_w     = h["current_weight"] if h else 0
-        tgt_qty   = int(snap["total"] * t["weight"] / 100 // t["price"]) if t["price"] else 0
-        rows.append({**t, "current_qty": cur_qty, "current_price": cur_price,
+        tgt_qty   = int(budget * t["weight"] / 100 // price) if price else 0
+        rows.append({**t, "price": price, "current_qty": cur_qty, "current_price": live,
                      "current_weight": cur_w, "target_qty": tgt_qty,
                      "diff_qty": tgt_qty - cur_qty})
+    _sweep_leftover_cash(rows, budget)
     # 목표에서 빠졌지만 보유 중 → 전량 매도 표시
     for tk, h in held.items():
         if tk not in target_tickers:
@@ -475,8 +490,9 @@ def api_rebalance(token: str = ""):
                          "current_price": h["price"], "current_weight": h["current_weight"],
                          "target_qty": 0, "diff_qty": -h["qty"]})
     # 최소 필요금액: 목표 각 종목을 비중만큼 사서 1주 이상 담으려면 필요한 총자산
-    #   (총자산 × weight% ≥ price  →  총자산 ≥ price × 100/weight). 가장 큰 값이 기준.
-    need = [t["price"] * 100 / t["weight"] for t in targets if t.get("weight") and t.get("price")]
+    #   (총자산 × weight% ≥ price  →  총자산 ≥ price × 100/weight). 버퍼도 감안.
+    need = [t["price"] * 100 / t["weight"] / REBALANCE_CASH_BUFFER
+            for t in targets if t.get("weight") and t.get("price")]
     min_required = int(max(need)) if need else 0
     return JSONResponse({"ok": True, "rows": rows, "total_value": snap["total"],
                          "cash": snap["cash"], "last_rebalance": snap["last_rebalance"],

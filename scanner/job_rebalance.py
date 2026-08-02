@@ -78,6 +78,18 @@ def preview_rebalance() -> dict:
     live  = _live_prices([t["ticker"] for t in targets] + list(holdings))
     total = _total_value(holdings, cash, live)
 
+    # 데이터 장애 방어 — 목표를 못 구했거나 가격이 없으면 '실행 불가' 계획을 돌려준다.
+    # 빈 목표로 그대로 진행하면 보유 전량이 매도 대상이 되어, 전략 신호가 아니라
+    # 시세 API 장애 때문에 시장을 이탈하게 된다.
+    unpriced = [t["ticker"] for t in targets if not (live.get(t["ticker"]) or t.get("price", 0))]
+    if not targets or unpriced:
+        reason = ("목표 비중 산출 실패 (가격 데이터 부족)" if not targets
+                  else f"체결가 조회 실패: {', '.join(unpriced)}")
+        log.error(f"[리밸런싱] 실행 불가 — {reason}")
+        return {"total_value": total, "cash": cash, "rows": [],
+                "actionable": False, "reason": reason,
+                "computed_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")}
+
     rows = []
     target_tickers = set()
     for t in targets:
@@ -107,13 +119,24 @@ def preview_rebalance() -> dict:
 
     return {
         "total_value": total, "cash": cash, "rows": rows,
+        "actionable": True, "reason": "",
         "computed_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
 def execute_rebalance() -> dict:
     """실제 매도→매수 주문 실행 + positions.json 갱신 + 이력 기록 + 텔레그램 리포트."""
-    plan  = preview_rebalance()
+    plan = preview_rebalance()
+    if not plan.get("actionable", True):
+        # 주문을 내지 않고 현 보유를 유지한다. 다음 달(또는 수동 실행) 때 재시도.
+        send_telegram(
+            "⚠️ *리밸런싱 중단 — 주문 없음*\n"
+            f"사유: {plan.get('reason', '알 수 없음')}\n"
+            "현재 보유를 그대로 유지했습니다. 데이터 복구 후 대시보드에서 수동 실행하세요."
+        )
+        log.error(f"[리밸런싱] 중단 — {plan.get('reason')}")
+        return {"plan": plan, "orders": [], "aborted": True}
+
     sells = [r for r in plan["rows"] if r["diff_qty"] < 0]
     buys  = [r for r in plan["rows"] if r["diff_qty"] > 0]
 

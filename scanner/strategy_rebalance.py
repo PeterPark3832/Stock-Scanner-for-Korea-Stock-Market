@@ -135,12 +135,13 @@ def _w13612_momentum(series: pd.Series | None) -> float | None:
 def _compute_dual(spec: dict, closes: dict) -> dict[str, float]:
     risk, safe, cash, topn = spec["risk"], spec["safe"], spec["cash_proxy"], spec["top_n"]
     cash_mom = _blended_momentum(closes.get(cash)) or 0.0
-    ranked = sorted(
-        [(tk, m) for tk in risk if (m := _blended_momentum(closes.get(tk))) is not None],
-        key=lambda x: x[1], reverse=True,
-    )[:topn]
-    if not ranked:
-        return {safe: 100.0}
+    scored = [(tk, m) for tk in risk if (m := _blended_momentum(closes.get(tk))) is not None]
+    # '데이터 장애'와 '전 자산 약세'를 구분한다. 상위 N개를 고를 만큼도 모멘텀을 못 구하면
+    # 방어 신호가 아니라 판단 불가다. 여기서 안전자산 100%를 돌려주면 시세 API가 죽은 날
+    # 보유 전량을 팔고 채권으로 갈아타게 된다(전략이 아니라 장애에 의한 시장 이탈).
+    if len(scored) < min(topn, len(risk)):
+        return {}
+    ranked = sorted(scored, key=lambda x: x[1], reverse=True)[:topn]
     slot = 100.0 / len(ranked)
     weights: dict[str, float] = {}
     for tk, mom in ranked:
@@ -153,7 +154,9 @@ def _compute_vaa(spec: dict, closes: dict) -> dict[str, float]:
     off, deff = spec["offensive"], spec["defensive"]
     B, topn = spec["breadth_break"], spec["top_n"]
     off_scores = {tk: m for tk in off if (m := _w13612_momentum(closes.get(tk))) is not None}
-    if not off_scores:
+    # 데이터 장애 방어: 공격군 절반도 모멘텀을 못 구하면 breadth 판정 자체를 신뢰할 수 없다.
+    # (VAA는 결측을 위험 신호로 취급하므로, 장애 시 방어자산 전량 이동이 일어난다)
+    if len(off_scores) < max(1, (len(off) + 1) // 2):
         return {}
     b = sum(1 for v in off_scores.values() if v <= 0) + (len(off) - len(off_scores))
     cf = min(1.0, b / B)

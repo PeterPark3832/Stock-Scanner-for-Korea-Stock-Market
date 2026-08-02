@@ -112,9 +112,25 @@ class TestComputeDual:
         w = _compute_dual(self.SPEC, closes)
         assert w == {"SAFE": 100.0}
 
-    def test_no_data_returns_safe_100(self):
-        w = _compute_dual(self.SPEC, {})
-        assert w == {"SAFE": 100.0}
+    def test_no_data_returns_empty_not_defensive(self):
+        """데이터 장애는 방어 신호가 아니다. 안전자산 100%를 돌려주면
+        시세 API가 죽은 날 보유 전량을 팔고 채권으로 갈아탄다."""
+        assert _compute_dual(self.SPEC, {}) == {}
+
+    def test_insufficient_data_for_top_n_returns_empty(self):
+        """상위 N개를 고를 만큼도 데이터가 없으면 판단 불가."""
+        closes = {"A": series_with_return(0.20),   # top_n=2인데 1개만 유효
+                  "CASH": series_with_return(0.0), "SAFE": series_with_return(0.01)}
+        assert _compute_dual(self.SPEC, closes) == {}
+
+    def test_all_weak_still_flees_to_safe(self):
+        """데이터가 충분한데 전 자산이 약세면 '진짜' 방어 신호이므로 안전자산으로 간다."""
+        closes = {
+            "A": series_with_return(-0.10), "B": series_with_return(-0.20),
+            "C": series_with_return(-0.30), "CASH": series_with_return(0.0),
+            "SAFE": series_with_return(0.01),
+        }
+        assert _compute_dual(self.SPEC, closes) == {"SAFE": 100.0}
 
     def test_weights_always_sum_to_100(self):
         closes = {
@@ -184,16 +200,21 @@ class TestComputeTargetWeights:
         tickers = {r["ticker"] for r in rows}
         assert tickers == {"069500", "143850", "133690"}
 
-    def test_no_data_yields_safe_slot_with_zero_price(self, monkeypatch):
-        """FDR 전면 실패 시: dual은 safe 100% 슬롯이 남되 price=0.
-        (매수 수량 계산은 preview_rebalance의 price>0 가드가 0주로 처리)"""
+    def test_no_data_yields_no_targets(self, monkeypatch):
+        """FDR 전면 실패 시 빈 목표를 돌려줘야 한다(호출부가 리밸런싱을 중단)."""
         import scanner.strategy_rebalance as sr
         monkeypatch.setattr(sr, "_close_series", lambda tk, start: None)
-        rows = sr.compute_target_weights("kr_gem")
-        assert len(rows) == 1
-        assert rows[0]["ticker"] == STRATEGIES["kr_gem"]["safe"]
-        assert rows[0]["weight"] == pytest.approx(100.0)
-        assert rows[0]["price"] == 0.0
+        assert sr.compute_target_weights("kr_gem") == []
+        assert sr.compute_target_weights("vaa_kr") == []
+
+    def test_vaa_partial_data_outage_returns_empty(self, monkeypatch):
+        """공격군 절반도 못 읽으면 breadth 판정을 신뢰할 수 없다."""
+        import scanner.strategy_rebalance as sr
+        spec = STRATEGIES["vaa_kr"]
+        only_one = {spec["offensive"][0]: series_with_return(0.10)}
+        only_one.update({tk: series_with_return(0.02) for tk in spec["defensive"]})
+        monkeypatch.setattr(sr, "_close_series", lambda tk, start: only_one.get(tk))
+        assert sr.compute_target_weights("vaa_kr") == []
 
     def test_vaa_key_uses_vaa_engine(self, monkeypatch):
         import scanner.strategy_rebalance as sr

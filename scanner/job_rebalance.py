@@ -93,8 +93,22 @@ def _sweep_leftover_cash(rows: list[dict], budget: float) -> None:
 
 def preview_rebalance() -> dict:
     """주문 없이 목표 비중·현재 비중·필요 주문 수량만 계산 (활성 전략 기준)."""
+    from scanner.strategy_rebalance import STRATEGIES
     targets = compute_target_weights(STRATEGY_KEY)
     holdings, cash = _current_state()
+
+    # 데이터 장애 방어 ② — positions.json엔 보유가 있는데 KIS 잔고조회가 비면 = 잔고 API
+    # 일시 장애. 그대로 진행하면 현재 보유를 0으로 착각해 전량 매도 계획을 세우거나
+    # positions.json을 날린다(08-03 실제 사고). snapshot_equity와 동일 가드로 중단한다.
+    expected = [p for p in load_positions()
+                if p.get("strategy") in STRATEGIES and p.get("quantity", 0) > 0]
+    if expected and not holdings:
+        reason = f"KIS 잔고조회 실패 (positions.json 상 {len(expected)}종목 보유 예상)"
+        log.error(f"[리밸런싱] 실행 불가 — {reason}")
+        return {"total_value": cash, "cash": cash, "rows": [],
+                "actionable": False, "reason": reason,
+                "computed_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")}
+
     # 평가금액과 주문수량을 같은 가격 기준으로 맞춘다. FDR 종가(전일)로 수량을 잡으면
     # 갭 발생 시 비중이 어긋나고 매수가 실패한다 → 실시간가 우선, 실패 시 FDR 종가.
     live  = _live_prices([t["ticker"] for t in targets] + list(holdings))

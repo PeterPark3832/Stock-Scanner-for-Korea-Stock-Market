@@ -12,6 +12,9 @@ def no_network(monkeypatch):
     monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 0)
     monkeypatch.setattr(jr, "get_current_price", lambda tk: None)
     monkeypatch.setattr(jr, "compute_target_weights", lambda key: [])
+    # 기본은 빈 장부 — ambient positions.json에 영향받지 않도록 격리
+    # (보유 기대 가드를 검증하는 테스트는 개별적으로 재정의한다).
+    monkeypatch.setattr(jr, "load_positions", lambda: [])
 
 
 class TestTotalValue:
@@ -70,6 +73,33 @@ class TestPreviewRebalance:
         plan = jr.preview_rebalance()
         assert plan["actionable"] is False
         assert plan["rows"] == []
+
+    def test_aborts_when_holdings_query_fails_but_positions_exist(self, monkeypatch):
+        """positions.json엔 보유가 있는데 KIS 잔고가 비면 = 조회 실패.
+        전량 매도 계획을 세우지 말고 중단해야 한다(08-03 실제 사고 회귀)."""
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
+            {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
+        ])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])   # 잔고 조회 실패
+        monkeypatch.setattr(jr, "load_positions", lambda: [
+            {"ticker": "069500", "strategy": "kr_gem", "quantity": 10},
+        ])
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is False
+        assert plan["rows"] == [], "조회 실패인데 매도 행 생성 — 전량 청산 위험"
+
+    def test_stays_actionable_on_genuinely_empty_account(self, monkeypatch):
+        """실제로 보유가 없는 신규 계좌(positions.json도 비어 있음)는 정상 진행."""
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
+            {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
+        ])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])
+        monkeypatch.setattr(jr, "load_positions", lambda: [])          # 기대 보유 없음
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is True and plan["rows"], "빈 계좌 신규 매수가 막힘"
 
     def test_removed_holding_marked_full_sell(self, monkeypatch):
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [

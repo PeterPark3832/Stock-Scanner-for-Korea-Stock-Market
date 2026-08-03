@@ -136,6 +136,56 @@ def get_order_possible_cash() -> int | None:
         pass
     return None
 
+_holdings_cache: dict = {"expires_at": 0, "value": None}
+def get_account_holdings() -> list[dict] | None:
+    """실제 KIS 계좌 보유 종목 → [{ticker, name, qty, avg_price}].
+    조회 실패 시 None(빈 계좌 []와 구분). 20초 캐시 + 3회 재시도."""
+    if _holdings_cache["value"] is not None and time.time() < _holdings_cache["expires_at"]:
+        return _holdings_cache["value"]
+    token = get_kis_token()
+    if not token:
+        return None
+    acno = read_env("KIS_ACCOUNT_NO", "").replace("-", "").replace(" ", "")
+    if len(acno) < 10:
+        return None
+    cano, acnt = acno[:8], acno[8:10]
+    tr_id = "TTTC8434R" if read_env("KIS_MODE", "paper") == "real" else "VTTC8434R"
+    data = None
+    for attempt in range(3):
+        try:
+            r = requests.get(f"{_kis_base()}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers={"content-type": "application/json",
+                         "authorization": f"Bearer {token}",
+                         "appkey": read_env("KIS_APP_KEY"),
+                         "appsecret": read_env("KIS_APP_SECRET"),
+                         "tr_id": tr_id, "custtype": "P"},
+                params={"CANO": cano, "ACNT_PRDT_CD": acnt,
+                        "AFHR_FLPR_YN": "N", "OFL_YN": "", "INQR_DVSN": "02",
+                        "UNPR_DVSN": "01", "FUND_STTL_ICLD_YN": "N",
+                        "FNCG_AMT_AUTO_RDPT_YN": "N", "PRCS_DVSN": "00",
+                        "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}, timeout=8)
+            r.raise_for_status()
+            d = r.json()
+            if d.get("rt_cd") == "0":
+                data = d
+                break
+        except Exception:
+            pass
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    if not data:
+        return None  # 실패 — 호출자가 positions.json 폴백
+    out = []
+    for h in data.get("output1", []):
+        ticker = (h.get("pdno") or "").strip()
+        qty    = int(h.get("hldg_qty", "0") or 0)
+        if not ticker or qty <= 0:
+            continue
+        out.append({"ticker": ticker, "name": h.get("prdt_name", ticker), "qty": qty,
+                    "avg_price": int(float(h.get("pchs_avg_pric", "0") or 0))})
+    _holdings_cache.update(expires_at=time.time() + _PRICE_TTL, value=out)
+    return out
+
 def send_telegram(text: str) -> None:
     token    = read_env("TELEGRAM_TOKEN")
     chat_ids = [c.strip() for c in read_env("TELEGRAM_CHAT_IDS").split(",") if c.strip()]
@@ -260,27 +310,46 @@ async def api_sell(ticker: str, request: Request, token: str = ""):
 
 def _portfolio_snapshot() -> dict:
     """현재 봇 관리 보유 평가 — 총평가금액·현금·보유종목·현재배분·매입원가 대비 평가손익.
-    전략 태그(kr_gem/kr_growth 등)와 무관하게 리밸런싱이 보유한 종목 전체를 합산한다."""
-    from scanner.strategy_rebalance import STRATEGIES
-    positions = [p for p in load_positions() if p.get("strategy") in STRATEGIES]
+
+    진실의 원천은 실제 KIS 계좌(get_account_holdings). 장마감 스냅샷(snapshot_equity)과
+    동일 소스라 그래프와 어긋나지 않는다. KIS 조회가 실패(None)할 때만 positions.json으로
+    폴백한다 — positions.json은 리밸런싱 시 재기록되며 드리프트할 수 있으므로 보조 소스."""
+    from scanner.strategy_rebalance import STRATEGIES, MANAGED_UNIVERSE
+
+    tw_map = {p["ticker"]: p.get("target_weight", 0)
+              for p in load_positions() if p.get("strategy") in STRATEGIES}
+
+    kis = get_account_holdings()
+    rows = []   # {ticker, name, qty, entry}
+    if kis is not None:
+        for h in kis:
+            if h["ticker"] in MANAGED_UNIVERSE:
+                rows.append({"ticker": h["ticker"], "name": h["name"],
+                             "qty": h["qty"], "entry": h["avg_price"]})
+    else:  # KIS 조회 실패 → positions.json 폴백
+        for p in load_positions():
+            if p.get("strategy") in STRATEGIES and p.get("quantity", 0) > 0:
+                rows.append({"ticker": p["ticker"], "name": p.get("name", p["ticker"]),
+                             "qty": p.get("quantity", 0), "entry": p.get("entry", 0)})
+
     holdings, equity, cost_basis = [], 0, 0
-    for p in positions:
-        live  = get_price(p["ticker"])
-        price = live["current"] if live else p.get("entry", 0)
-        qty   = p.get("quantity", 0)
-        entry = p.get("entry", 0)
-        val   = price * qty
+    for r in rows:
+        live  = get_price(r["ticker"])
+        price = live["current"] if live else r["entry"]
+        qty, entry = r["qty"], r["entry"]
+        val = price * qty
         equity += val
         cost_basis += entry * qty
         pnl_pct = round((price - entry) / entry * 100, 2) if entry else None
-        holdings.append({"ticker": p["ticker"], "name": p.get("name", p["ticker"]),
+        holdings.append({"ticker": r["ticker"], "name": r["name"],
                          "qty": qty, "price": price, "value": val, "entry": entry,
-                         "pnl_pct": pnl_pct, "target_weight": p.get("target_weight", 0)})
+                         "pnl_pct": pnl_pct, "target_weight": tw_map.get(r["ticker"], 0)})
     cash  = get_order_possible_cash() or 0
     total = equity + cash
     for h in holdings:
         h["current_weight"] = round(h["value"] / total * 100, 1) if total else 0
-    last_rebalance = max((p.get("entry_date", "") for p in positions), default="")
+    last_rebalance = max((p.get("entry_date", "") for p in load_positions()
+                          if p.get("strategy") in STRATEGIES), default="")
     unrealized = round((equity - cost_basis) / cost_basis * 100, 2) if cost_basis else 0.0
     return {"holdings": holdings, "equity": equity, "cash": cash, "total": total,
             "cost_basis": cost_basis, "unrealized_pnl": unrealized,

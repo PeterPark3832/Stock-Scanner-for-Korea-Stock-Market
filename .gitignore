@@ -16,6 +16,7 @@ equity_snapshots.json
 cash_flows.json
 screening_log.json
 review_last.json
+learning_state.json
 *.lock
 
 # Python 캐시

@@ -15,6 +15,8 @@ def no_network(monkeypatch):
     # 기본은 빈 장부 — ambient positions.json에 영향받지 않도록 격리
     # (보유 기대 가드를 검증하는 테스트는 개별적으로 재정의한다).
     monkeypatch.setattr(jr, "load_positions", lambda: [])
+    # 체결 반영 대기는 실거래용 — 테스트에서 실제로 잠들 이유가 없다.
+    monkeypatch.setattr(jr, "ORDER_SETTLE_WAIT", 0)
 
 
 class TestTotalValue:
@@ -385,3 +387,72 @@ class TestSnapshotEquity:
             arr = json.load(f)
         assert len(arr) == 1, "같은 날짜는 교체(dedupe)"
         assert arr[0]["total"] == 600_000
+
+
+class TestFillPriceInstrumentation:
+    """학습 재료 계측 — 부정확한 체결가로 학습하면 비용 추정이 오히려 나빠진다."""
+
+    def test_records_fill_for_new_position(self):
+        results = [{"ticker": "069500", "side": "buy", "qty": 10,
+                    "qty_before": 0, "success": True}]
+        jr._attach_fill_prices(results, {"069500": {"qty": 10, "avg_price": 10_150}})
+        assert results[0]["fill_price"] == 10_150
+
+    def test_skips_add_on_buy_where_average_is_blended(self):
+        """기존 보유에 추가 매수하면 매입평균가가 섞여 체결가를 복원할 수 없다."""
+        results = [{"ticker": "069500", "side": "buy", "qty": 10,
+                    "qty_before": 5, "success": True}]
+        jr._attach_fill_prices(results, {"069500": {"qty": 15, "avg_price": 10_100}})
+        assert "fill_price" not in results[0]
+
+    def test_skips_when_quantity_mismatch(self):
+        """부분 체결이면 평균가가 주문 수량과 안 맞는다 → 기록하지 않음."""
+        results = [{"ticker": "069500", "side": "buy", "qty": 10,
+                    "qty_before": 0, "success": True}]
+        jr._attach_fill_prices(results, {"069500": {"qty": 7, "avg_price": 10_150}})
+        assert "fill_price" not in results[0]
+
+    def test_skips_failed_and_sell_orders(self):
+        results = [{"ticker": "069500", "side": "buy", "qty": 10,
+                    "qty_before": 0, "success": False},
+                   {"ticker": "132030", "side": "sell", "qty": 3,
+                    "qty_before": 3, "success": True}]
+        jr._attach_fill_prices(results, {"069500": {"qty": 10, "avg_price": 10_150},
+                                         "132030": {"qty": 0, "avg_price": 20_000}})
+        assert all("fill_price" not in r for r in results)
+
+    def test_empty_snapshot_is_safe(self):
+        results = [{"ticker": "069500", "side": "buy", "qty": 10,
+                    "qty_before": 0, "success": True}]
+        jr._attach_fill_prices(results, {})
+        assert "fill_price" not in results[0]
+
+    def test_log_carries_planned_and_fill(self, monkeypatch, tmp_path):
+        """리밸런싱 로그에 계획가·체결가가 남아야 학습이 가능하다."""
+        import json as _json
+        log_file = str(tmp_path / "rebalance_log.json")
+        monkeypatch.setattr(jr, "REBALANCE_LOG_FILE", log_file)
+        plan = {"total_value": 1_000_000, "cash": 0, "rows": [
+            {"ticker": "069500", "name": "K200", "weight": 100.0,
+             "price": 10_000, "target_qty": 10}]}
+        results = [{"ticker": "069500", "name": "K200", "side": "buy", "qty": 10,
+                    "price": 10_150, "planned_price": 10_000, "fill_price": 10_150,
+                    "pnl_pct": None, "success": True}]
+        jr._record_rebalance_log(plan, results)
+        with open(log_file, encoding="utf-8") as f:
+            order = _json.load(f)[0]["orders"][0]
+        assert order["planned_price"] == 10_000 and order["fill_price"] == 10_150
+
+    def test_reconcile_reuses_shared_snapshot(self, monkeypatch):
+        """계측과 동기화가 같은 스냅샷을 써야 한다 — 재조회하면 상태가 어긋난다."""
+        calls = []
+        monkeypatch.setattr(jr, "get_account_holdings",
+                            lambda: calls.append(1) or [])
+        monkeypatch.setattr(jr, "save_positions", lambda arr: None)
+        plan = {"rows": [{"ticker": "069500", "name": "K200", "weight": 100.0,
+                          "price": 10_000, "current_qty": 0, "target_qty": 10,
+                          "diff_qty": 10}]}
+        snap = {"069500": {"ticker": "069500", "name": "K200", "qty": 10,
+                           "avg_price": 10_150}}
+        jr._reconcile_positions(plan, [], snap)
+        assert calls == [], "스냅샷을 넘겼는데 잔고를 다시 조회함"

@@ -111,6 +111,15 @@ def _cmd_review() -> None:
     threading.Thread(target=_run, daemon=True, name="strategy-review").start()
 
 
+def _cmd_learn() -> None:
+    """체결 품질 학습 리포트 — 로그만 읽으므로 즉시 응답 가능."""
+    try:
+        from scanner.learn import job_learning_review
+        job_learning_review()
+    except Exception as e:
+        send_telegram(f"⚠️ *학습 리포트 실패*\n`{str(e)[:200]}`")
+
+
 def handle_command(text: str) -> None:
     parts = text.strip().lower().split()
     cmd   = parts[0]
@@ -119,6 +128,8 @@ def handle_command(text: str) -> None:
         _cmd_positions()
     elif cmd == "/review":
         _cmd_review()
+    elif cmd == "/learn":
+        _cmd_learn()
     elif cmd == "/stats":
         _cmd_stats()
     elif cmd == "/report":
@@ -160,6 +171,7 @@ def handle_command(text: str) -> None:
             "📋 *사용 가능한 커맨드*\n\n"
             "/positions — 보유 포지션 실시간 PnL\n"
             "/review — 전략 5종 백테스트 비교 리포트\n"
+            "/learn — 체결 품질 학습 현황 (실측 슬리피지·비용 보정)\n"
             "/stats — 최근 스크리닝 필터 통계\n"
             "/report — 누적 성과 리포트\n"
             "/pause — 신규 신호 발송 정지\n"

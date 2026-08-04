@@ -29,9 +29,14 @@ from scanner.strategy_rebalance import (
 
 # ── 실거래 비용 가정 ────────────────────────────────────────────────
 # 국내 ETF: 증권거래세 면제. 위탁수수료는 증권사별 0.0036~0.015%.
-# 슬리피지는 09:05 시장가(개장 직후 스프레드 확대) 기준 보수적 가정.
-DEFAULT_COMMISSION = 0.00015   # 0.015% (편도)
-DEFAULT_SLIPPAGE   = 0.0015    # 0.15% (편도) — 개장 직후 시장가
+# 초기값은 가정이지만, 실제 체결이 쌓이면 scanner.learn 이 실측으로 보정한다
+# (자기주도 학습 — 가정으로 전략을 고르지 않도록).
+try:
+    from scanner.learn import learned_costs as _learned_costs
+    DEFAULT_SLIPPAGE, DEFAULT_COMMISSION = _learned_costs()
+except Exception:      # 학습 상태가 없거나 읽기 실패 → 기본 가정
+    DEFAULT_COMMISSION = 0.00015   # 0.015% (편도)
+    DEFAULT_SLIPPAGE   = 0.0015    # 0.15% (편도)
 CASH_BUFFER        = 0.995     # 수수료·호가 변동 대비 매수 여력 여유
 
 TRADING_DAYS = 252

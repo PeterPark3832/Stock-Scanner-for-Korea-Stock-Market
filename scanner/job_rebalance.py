@@ -181,6 +181,10 @@ def execute_rebalance() -> dict:
     old_entry = {p["ticker"]: p.get("entry", 0)
                  for p in load_positions() if p.get("strategy") in STRATEGIES}
 
+    # 학습용 계측: 주문 직전 보유 수량. plan이 이미 같은 잔고 스냅샷으로 만들어졌으므로
+    # 잔고를 다시 조회하지 않는다(API 호출 절약 + 계획과 같은 기준 유지).
+    qty_before = {r["ticker"]: r.get("current_qty", 0) for r in plan["rows"]}
+
     results = []
     for r in sells:
         res = place_order(r["ticker"], "sell", -r["diff_qty"], r["name"])
@@ -189,7 +193,9 @@ def execute_rebalance() -> dict:
         entry = old_entry.get(r["ticker"], 0)
         pnl   = round((price - entry) / entry * 100, 2) if entry else None
         results.append({"ticker": r["ticker"], "name": r["name"], "side": "sell",
-                        "qty": -r["diff_qty"], "price": price, "pnl_pct": pnl, **res})
+                        "qty": -r["diff_qty"], "price": price, "pnl_pct": pnl,
+                        "planned_price": r.get("price", 0), "qty_before": qty_before.get(r["ticker"], 0),
+                        **res})
 
     if sells and buys:
         need = sum(r["diff_qty"] * r["price"] for r in buys)
@@ -200,9 +206,16 @@ def execute_rebalance() -> dict:
         live  = get_current_price(r["ticker"])
         price = live["current"] if live else r["price"]
         results.append({"ticker": r["ticker"], "name": r["name"], "side": "buy",
-                        "qty": r["diff_qty"], "price": price, "pnl_pct": None, **res})
+                        "qty": r["diff_qty"], "price": price, "pnl_pct": None,
+                        "planned_price": r.get("price", 0), "qty_before": qty_before.get(r["ticker"], 0),
+                        **res})
 
-    _reconcile_positions(plan, results)
+    # 시장가 주문은 place_order 반환 시점엔 '접수'일 뿐 체결 반영 전이다. 곧바로 잔고를
+    # 조회하면 체결가도 못 잡고 포지션 동기화도 주문 전 상태로 굳는다. 잠시 대기 후
+    # 한 번만 조회해 계측·동기화가 같은 스냅샷을 쓰게 한다.
+    post = _post_order_holdings()
+    _attach_fill_prices(results, post)
+    _reconcile_positions(plan, results, post)
     _record_rebalance_log(plan, results)
 
     ok = sum(1 for r in results if r["success"])
@@ -218,6 +231,15 @@ def execute_rebalance() -> dict:
         f"{lines or '  (주문 변경 없음)'}"
     )
     log.info(f"[리밸런싱] {ok}/{len(results)} 주문 성공 (총자산 {plan['total_value']:,}원)")
+
+    # 새 체결이 쌓인 직후가 학습 시점 — 다음 판단부터 보정된 비용이 쓰인다.
+    # 학습 실패가 리밸런싱 결과를 뒤엎으면 안 되므로 예외를 격리한다.
+    try:
+        from scanner.learn import run_learning
+        run_learning()
+    except Exception as e:
+        log.warning(f"[학습] 리밸런싱 후 학습 실패(무시): {e}")
+
     return {"plan": plan, "orders": results}
 
 
@@ -263,13 +285,50 @@ def snapshot_equity() -> dict | None:
     return snap
 
 
+ORDER_SETTLE_WAIT = 5   # 초 — 시장가 접수 후 잔고에 체결이 반영되기까지 여유
+
+
+def _post_order_holdings() -> dict[str, dict]:
+    """체결 반영을 기다린 뒤 잔고를 한 번 조회한다(계측·동기화 공용 스냅샷)."""
+    try:
+        time.sleep(ORDER_SETTLE_WAIT)
+        return {h["ticker"]: h for h in get_account_holdings()}
+    except Exception as e:
+        log.warning(f"[리밸런싱] 주문 후 잔고조회 실패: {e}")
+        return {}
+
+
+def _attach_fill_prices(results: list[dict], live: dict[str, dict] | None = None) -> None:
+    """실제 체결가를 결과에 붙인다(학습용 계측).
+
+    '신규 편입 매수'만 매입평균가 = 체결가가 성립한다. 기존 보유에 추가 매수하면
+    평균가가 섞여 체결가를 복원할 수 없으므로 fill_price를 남기지 않는다
+    (부정확한 값으로 학습하면 비용 추정이 오히려 나빠진다).
+    """
+    if live is None:
+        live = _post_order_holdings()
+    if not live:
+        return
+    for r in results:
+        if not r.get("success") or r.get("side") != "buy":
+            continue
+        if r.get("qty_before", 0) != 0:          # 추가 매수 → 평단이 섞임
+            continue
+        h = live.get(r["ticker"])
+        if h and h.get("avg_price", 0) > 0 and h.get("qty", 0) == r.get("qty"):
+            r["fill_price"] = int(h["avg_price"])
+
+
 def _record_rebalance_log(plan: dict, results: list[dict]) -> None:
     """리밸런싱 이벤트 1건을 rebalance_log.json에 append (성공 주문만 기록)."""
     holdings = [{"ticker": r["ticker"], "name": r["name"], "weight": r["weight"],
                  "qty": r["target_qty"], "value": int(r["target_qty"] * r["price"])}
                 for r in plan["rows"] if r["target_qty"] > 0]
     orders = [{"ticker": r["ticker"], "name": r["name"], "side": r["side"],
-               "qty": r["qty"], "price": r.get("price", 0), "pnl_pct": r.get("pnl_pct")}
+               "qty": r["qty"], "price": r.get("price", 0), "pnl_pct": r.get("pnl_pct"),
+               # 학습용 — 계획가 대비 실제 체결가(있을 때만)
+               "planned_price": r.get("planned_price", 0),
+               "fill_price": r.get("fill_price")}
               for r in results if r.get("success")]
     event = {
         "ts":          datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
@@ -291,12 +350,15 @@ def _record_rebalance_log(plan: dict, results: list[dict]) -> None:
             log.error(f"[리밸런싱] 이력 기록 실패: {e}")
 
 
-def _reconcile_positions(plan: dict, results: list[dict]) -> None:
+def _reconcile_positions(plan: dict, results: list[dict],
+                         holdings: dict[str, dict] | None = None) -> None:
     """주문 후 실제 체결 결과로 positions.json을 맞춘다.
 
-    KIS 잔고를 다시 조회해 **실제 보유 수량과 매입평균가**로 기록한다. 목표(plan)를
-    그대로 저장하면 주문이 실패해도 보유한 것처럼 남아, 다음 달 주문 수량과 실현손익이
-    모두 어긋난다. 잔고 재조회가 실패하면 성공한 주문만 반영해 보수적으로 기록한다.
+    KIS 잔고의 **실제 보유 수량과 매입평균가**로 기록한다. 목표(plan)를 그대로
+    저장하면 주문이 실패해도 보유한 것처럼 남아, 다음 달 주문 수량과 실현손익이
+    모두 어긋난다. 잔고를 못 얻으면 성공한 주문만 반영해 보수적으로 기록한다.
+
+    holdings: 주문 후 잔고 스냅샷. 넘기지 않으면 직접 조회한다(체결 반영 대기 포함).
     """
     from scanner.strategy_rebalance import STRATEGIES, MANAGED_UNIVERSE
     now_str  = datetime.now(KST).strftime("%Y-%m-%d")
@@ -304,7 +366,8 @@ def _reconcile_positions(plan: dict, results: list[dict]) -> None:
     weights  = {r["ticker"]: r.get("weight", 0.0) for r in plan["rows"]}
     prev     = {p["ticker"]: p for p in load_positions() if p.get("strategy") in STRATEGIES}
 
-    live = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in MANAGED_UNIVERSE}
+    snap = holdings if holdings is not None else _post_order_holdings()
+    live = {tk: h for tk, h in snap.items() if tk in MANAGED_UNIVERSE}
     if live:
         for tk, h in live.items():
             keep.append(_position_record(

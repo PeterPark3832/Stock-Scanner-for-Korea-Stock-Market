@@ -195,7 +195,12 @@ def job_strategy_review(seed: int | None = None) -> str | None:
     if seed is None:
         seed = _current_equity() or 10_000_000
 
-    log.info(f"[전략리뷰] 백테스트 시작 (시드 {seed:,}원)")
+    # 학습된 비용을 매번 새로 읽는다. backtest 모듈 상수는 import 시점 값이라,
+    # 장기 실행 중인 봇에서는 학습이 갱신돼도 재시작 전까지 반영되지 않는다.
+    from scanner.learn import learned_costs
+    slippage, commission = learned_costs()
+    log.info(f"[전략리뷰] 백테스트 시작 (시드 {seed:,}원, "
+             f"슬리피지 {slippage*100:.3f}% · 수수료 {commission*100:.3f}%)")
     try:
         prices = bt.fetch_prices(sorted(MANAGED_UNIVERSE), "2014-01-01")
     except Exception as e:
@@ -210,7 +215,7 @@ def job_strategy_review(seed: int | None = None) -> str | None:
     for key in STRATEGIES:
         try:
             r = bt.run_backtest(key, prices, "2016-01-01", seed,
-                                bt.DEFAULT_COMMISSION, bt.DEFAULT_SLIPPAGE)
+                                commission, slippage)
         except Exception as e:
             log.warning(f"[전략리뷰] {key} 실패: {e}")
             continue
@@ -219,7 +224,7 @@ def job_strategy_review(seed: int | None = None) -> str | None:
     if results:
         b = bt.buy_and_hold(prices, "069500", min(r["start"] for r in results),
                             max(r["end"] for r in results), seed,
-                            bt.DEFAULT_COMMISSION, bt.DEFAULT_SLIPPAGE)
+                            commission, slippage)
         if b:
             results.append(b)
 

@@ -76,7 +76,7 @@ uvicorn dashboard:app --host 0.0.0.0 --port 8081
 
 ```bash
 python -m pytest tests/ -q
-# 248개 테스트 전체 통과 확인
+# 294개 테스트 전체 통과 확인
 ```
 
 ---
@@ -157,6 +157,7 @@ python -m pytest tests/ -q
 | `/positions` | 보유 포지션 전종목 실시간 PnL |
 | `/report` | 누적 성과 + 최근 5건 거래 |
 | `/review` | 전략 5종 백테스트 비교 리포트 즉시 실행 |
+| `/learn` | 체결 품질 학습 현황 (실측 슬리피지·비용 보정) |
 | `/stats` | 최근 스크리닝 필터 통계 (눌림목 모드) |
 | `/autotrade on·off` | 자동매매 토글 |
 | `/pause` `/resume` | 신규 신호 발송 중지/재개 (눌림목 모드) |
@@ -183,6 +184,30 @@ python -m pytest tests/ -q
 - 전략 변경: 대시보드 '리밸런싱' 탭 → 전략 변경 (다음 리밸런싱부터 적용)
 
 눌림목 전략 파라미터 근거 → [`STRATEGY.md`](STRATEGY.md)
+
+---
+
+## 자기주도 학습 — 봇이 자기 체결에서 배웁니다
+
+백테스트는 슬리피지 0.15%를 **가정**합니다. 이 가정이 틀리면 전략 순위와 기대수익이
+통째로 틀어집니다. 그래서 봇이 **실제 체결가를 재서 그 가정을 대체**합니다.
+
+```
+주문 실행 → 계획가 vs 실제 체결가 계측 → 슬리피지 측정 → 비용 가정 보정 → 다음 백테스트에 반영
+```
+
+- **계측**: 신규 편입 매수만 사용합니다(매입평균가 = 체결가가 성립). 추가 매수는
+  평단이 섞여 체결가를 복원할 수 없으므로 학습에서 제외합니다 — 부정확한 값으로
+  배우면 비용 추정이 오히려 나빠집니다.
+- **축소보정(shrinkage)**: 표본이 적을 때 단순평균을 쓰면 운 나쁜 체결 한 건이
+  가정을 왜곡합니다. 측정값을 기본값 쪽으로 끌어당기고, 표본이 쌓일수록 측정값에
+  수렴시킵니다 — `보정값 = (n·측정 + 12·기본) / (n + 12)`
+- **신뢰도 게이팅**: 3건 미만이면 수치를 말하지 않고, 6건 미만이면 자동 보정하지
+  않습니다. ±20%를 넘는 값은 슬리피지가 아니라 데이터 오류로 보고 버립니다.
+- **자동 적용 범위**: **비용 가정만** 자동 갱신합니다(측정값이므로 안전).
+  전략 교체·체결 시각 변경은 판단이 필요하므로 **권고만** 하고 사람이 결정합니다.
+
+실행: 리밸런싱 직후 자동, 또는 텔레그램 `/learn`
 
 ---
 
@@ -274,6 +299,7 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── strategy_rebalance.py  # 리밸런싱 전략 5종 — 목표비중 계산
 │   ├── job_rebalance.py       # 월간 리밸런싱 실행·평가금액 스냅샷
 │   ├── job_strategy_review.py # 전략 5종 자동 백테스트 비교 리포트
+│   ├── learn.py               # 자기주도 학습 — 체결 실측으로 비용 가정 보정
 │   ├── doctor.py              # 배포 점검 (수익 영향 설정 진단)
 │   ├── job_heartbeat.py       # 09:00 생존신호
 │   ├── job_screener.py        # (눌림목) 1차·2차 스크리닝
@@ -290,14 +316,15 @@ python backtest_rebalance.py --slippage 0.003
 │   ├── telegram_poll.py       # Long Polling 스레드
 │   ├── state.py               # 전역 Lock·Flag·캐시
 │   └── logger.py              # 로깅 설정
-├── tests/                     # pytest 테스트 (248개)
+├── tests/                     # pytest 테스트 (294개)
 ├── backtest_rebalance.py      # 리밸런싱 전략 5종 백테스트 (전략 선택용)
 ├── backtest_strategies.py     # (눌림목) 백테스트 도구
 └── UI_CHECKLIST.md            # 대시보드 UI 점검 체크리스트
 ```
 
 런타임 생성 파일(모두 .gitignore): `positions.json` `trade_history.csv`
-`rebalance_log.json` `equity_snapshots.json` `cash_flows.json` `review_last.json` `scanner.log`
+`rebalance_log.json` `equity_snapshots.json` `cash_flows.json` `review_last.json`
+`learning_state.json` `scanner.log`
 
 전체 아키텍처 → [`ARCHITECTURE.md`](ARCHITECTURE.md)
 

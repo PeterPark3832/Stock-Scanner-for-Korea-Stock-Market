@@ -105,6 +105,7 @@ def _heartbeat_rebalance(now: datetime) -> None:
     from scanner.strategy_rebalance import get_strategy
     from scanner.job_rebalance import _current_state, _total_value
     holdings, cash = _current_state()
+    cash   = cash or 0   # 현금 조회 실패(None)를 표시용 0으로
     total  = _total_value(holdings, cash)
     equity = total - cash
     with state._auto_trade_lock:

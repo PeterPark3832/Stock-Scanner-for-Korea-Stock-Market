@@ -40,4 +40,28 @@ class TestRebalanceTimeWarning:
         import scanner.config as cfg
         importlib.reload(cfg)
         assert cfg.REBALANCE_TIME == "10:00"
+
+
+class TestNumericEnvParsing:
+    """빈 값·비숫자 환경변수가 임포트 단계에서 봇·doctor를 죽이지 않아야 한다."""
+
+    @pytest.mark.parametrize("key,default", [
+        ("REBALANCE_CASH_BUFFER", 0.995),
+        ("STRATEGY_REVIEW_DAY", 25),
+        ("TRADE_AMOUNT_PER_STOCK", 1_000_000),
+    ])
+    @pytest.mark.parametrize("bad", ["", "  ", "abc", "25일", "0.9x"])
+    def test_bad_value_falls_back_to_default(self, monkeypatch, key, default, bad):
+        monkeypatch.setenv(key, bad)
+        import scanner.config as cfg
+        importlib.reload(cfg)
+        assert getattr(cfg, key) == default, f"{key}={bad!r} → 기본값 {default}이어야 함"
+
+    def test_valid_value_is_parsed(self, monkeypatch):
+        monkeypatch.setenv("REBALANCE_CASH_BUFFER", "0.98")
+        monkeypatch.setenv("STRATEGY_REVIEW_DAY", "20")
+        import scanner.config as cfg
+        importlib.reload(cfg)
+        assert cfg.REBALANCE_CASH_BUFFER == 0.98
+        assert cfg.STRATEGY_REVIEW_DAY == 20
         assert cfg.rebalance_time_warning() is None, "기본값이 저유동성 구간이면 안 됨"

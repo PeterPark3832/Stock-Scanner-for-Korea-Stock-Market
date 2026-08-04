@@ -23,7 +23,28 @@ TELEGRAM_TOPIC_ID = int(_raw_topic) if _raw_topic.isdigit() else None
 KIS_APP_KEY    = os.getenv("KIS_APP_KEY")
 KIS_APP_SECRET = os.getenv("KIS_APP_SECRET")
 KIS_ACCOUNT_NO = os.getenv("KIS_ACCOUNT_NO", "")
-TRADE_AMOUNT_PER_STOCK = int(os.getenv("TRADE_AMOUNT_PER_STOCK", "1000000"))
+
+
+def _int_env(key: str, default: int) -> int:
+    """환경변수를 int로 파싱하되, 키가 비어 있거나 숫자가 아니면 기본값.
+    os.getenv(k, default)는 키가 '있는데 빈 값'이면 default를 안 쓰고 int('')로 죽는다 —
+    그러면 봇도 doctor도 임포트 단계에서 크래시한다."""
+    raw = (os.getenv(key) or "").strip()
+    try:
+        return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _float_env(key: str, default: float) -> float:
+    raw = (os.getenv(key) or "").strip()
+    try:
+        return float(raw) if raw else default
+    except ValueError:
+        return default
+
+
+TRADE_AMOUNT_PER_STOCK = _int_env("TRADE_AMOUNT_PER_STOCK", 1_000_000)
 _AUTO_TRADE_INIT = os.getenv("AUTO_TRADE", "false").lower() == "true"
 
 STRATEGY_MODE  = os.getenv("STRATEGY_MODE", "rebalance").lower()  # "rebalance"(ETF/모멘텀) | "breakout"(눌림목)
@@ -59,11 +80,11 @@ def rebalance_time_warning() -> str | None:
 # 매수 여력 버퍼 — 목표금액을 총자산의 이 비율로 계산한다.
 # 수량은 전일 종가로 산출하는데 체결은 당일 시가라, 갭상승 시 주문금액이 현금을 넘어
 # "주문가능금액 부족"으로 매수가 통째로 실패한다(= 그 달 미투자). 0.5% 여유로 방지.
-REBALANCE_CASH_BUFFER = float(os.getenv("REBALANCE_CASH_BUFFER", "0.995"))
+REBALANCE_CASH_BUFFER = _float_env("REBALANCE_CASH_BUFFER", 0.995)
 
 # 전략 리뷰 — 매월 이 날짜에 5개 전략을 실데이터로 백테스트해 텔레그램 보고.
 # 리밸런싱(첫 거래일) 전에 여유를 두고 받아보도록 25일 기본. 0이면 자동 실행 안 함.
-STRATEGY_REVIEW_DAY  = int(os.getenv("STRATEGY_REVIEW_DAY", "25"))
+STRATEGY_REVIEW_DAY  = _int_env("STRATEGY_REVIEW_DAY", 25)
 STRATEGY_REVIEW_TIME = os.getenv("STRATEGY_REVIEW_TIME", "18:00")
 
 _KIS_MODE = os.getenv("KIS_MODE", "paper").lower()

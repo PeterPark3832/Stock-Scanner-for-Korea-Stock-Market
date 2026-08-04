@@ -16,11 +16,14 @@ from scanner.notify import send_telegram
 from scanner.logger import log
 
 
-def _current_state() -> tuple[dict[str, dict], int]:
+def _current_state() -> tuple[dict[str, dict], int | None]:
     """봇 관리 유니버스(5전략 합집합)에 속한 보유 종목과 가용 현금 조회.
-    전략 전환 시 옛 전략 종목도 잡혀 목표=0으로 매도된다. 그 외(눌림목·수동 종목)는 무시."""
+    전략 전환 시 옛 전략 종목도 잡혀 목표=0으로 매도된다. 그 외(눌림목·수동 종목)는 무시.
+
+    현금은 조회 실패 시 None을 그대로 돌려준다. 여기서 0으로 뭉개면 총자산이 과소계상돼
+    보유 전량이 소폭 매도로 잡힌다(단순 API 블립이 매매를 유발). 호출자가 None을 판단한다."""
     holdings = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in MANAGED_UNIVERSE}
-    cash = get_order_possible_cash("", 0) or 0
+    cash = get_order_possible_cash("", 0)
     return holdings, cash
 
 
@@ -34,9 +37,9 @@ def _live_prices(tickers) -> dict[str, int]:
     return out
 
 
-def _total_value(holdings: dict[str, dict], cash: int,
+def _total_value(holdings: dict[str, dict], cash: int | None,
                  prices: dict[str, int] | None = None) -> int:
-    total = cash
+    total = cash or 0   # cash=None(조회 실패)을 표시 경로에서 안전 처리
     for tk, h in holdings.items():
         price = (prices or {}).get(tk)
         if not price:
@@ -105,7 +108,16 @@ def preview_rebalance() -> dict:
     if expected and not holdings:
         reason = f"KIS 잔고조회 실패 (positions.json 상 {len(expected)}종목 보유 예상)"
         log.error(f"[리밸런싱] 실행 불가 — {reason}")
-        return {"total_value": cash, "cash": cash, "rows": [],
+        return {"total_value": cash or 0, "cash": cash or 0, "rows": [],
+                "actionable": False, "reason": reason,
+                "computed_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")}
+
+    # 데이터 장애 방어 ③ — 주문가능금액 조회가 실패(None)하면 총자산이 과소계상돼
+    # 보유 전부가 소폭 매도로 잡힌다. 사이징 근거가 없으므로 중단하고 현 보유를 유지한다.
+    if cash is None:
+        reason = "KIS 주문가능금액 조회 실패"
+        log.error(f"[리밸런싱] 실행 불가 — {reason}")
+        return {"total_value": 0, "cash": 0, "rows": [],
                 "actionable": False, "reason": reason,
                 "computed_at": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -264,6 +276,7 @@ def snapshot_equity() -> dict | None:
         )
         return None
 
+    cash   = cash or 0   # 현금 조회 실패는 0으로 (equity는 보유 기준이라 그래프 정확)
     total  = _total_value(holdings, cash)
     equity = total - cash
     today  = datetime.now(KST).strftime("%Y-%m-%d")

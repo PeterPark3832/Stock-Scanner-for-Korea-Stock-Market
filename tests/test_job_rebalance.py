@@ -103,6 +103,24 @@ class TestPreviewRebalance:
         plan = jr.preview_rebalance()
         assert plan["actionable"] is True and plan["rows"], "빈 계좌 신규 매수가 막힘"
 
+    def test_aborts_when_cash_query_fails(self, monkeypatch):
+        """주문가능금액 조회 실패(None)면 총자산이 과소계상돼 보유가 전부 소폭 매도로
+        잡힌다 → 사이징 근거 없음으로 중단(현 보유 유지)."""
+        monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
+            {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
+        ])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [
+            {"ticker": "069500", "name": "K200", "qty": 50, "avg_price": 10_000},
+        ])
+        monkeypatch.setattr(jr, "load_positions", lambda: [
+            {"ticker": "069500", "strategy": "kr_gem", "quantity": 50},
+        ])
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: None)  # 현금 조회 실패
+        monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
+        plan = jr.preview_rebalance()
+        assert plan["actionable"] is False
+        assert plan["rows"] == [], "현금 조회 실패인데 매도 행 생성 — 유령 총자산으로 청산 위험"
+
     def test_removed_holding_marked_full_sell(self, monkeypatch):
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
             {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},

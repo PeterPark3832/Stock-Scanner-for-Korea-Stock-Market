@@ -5,7 +5,10 @@ import time
 from datetime import datetime
 
 from scanner.strategy_rebalance import compute_target_weights, get_strategy, MANAGED_UNIVERSE
-from scanner.kis import get_account_holdings, get_order_possible_cash, get_current_price, place_order
+from scanner.kis import (
+    get_account_holdings, get_order_possible_cash, get_current_price, place_order,
+    get_deposit_balance,
+)
 from scanner.positions import load_positions, save_positions
 from scanner.config import (
     REBALANCE_LOG_FILE, EQUITY_SNAPSHOT_FILE, STRATEGY_KEY, REBALANCE_CASH_BUFFER,
@@ -16,13 +19,17 @@ from scanner.notify import send_telegram
 from scanner.logger import log
 
 
-def _current_state() -> tuple[dict[str, dict], int | None]:
+def _current_state() -> tuple[dict[str, dict] | None, int | None]:
     """봇 관리 유니버스(5전략 합집합)에 속한 보유 종목과 가용 현금 조회.
     전략 전환 시 옛 전략 종목도 잡혀 목표=0으로 매도된다. 그 외(눌림목·수동 종목)는 무시.
 
-    현금은 조회 실패 시 None을 그대로 돌려준다. 여기서 0으로 뭉개면 총자산이 과소계상돼
-    보유 전량이 소폭 매도로 잡힌다(단순 API 블립이 매매를 유발). 호출자가 None을 판단한다."""
-    holdings = {h["ticker"]: h for h in get_account_holdings() if h["ticker"] in MANAGED_UNIVERSE}
+    보유·현금 모두 '조회 실패'는 None을 그대로 돌려준다(호출자가 판단).
+      · holdings=None → 잔고조회 API 장애. holdings={} → 정상 조회, 빈 계좌(전량 매도).
+        이 둘을 뭉개면 사용자가 전량 매도한 빈 계좌를 장애로 오인한다.
+      · cash=None → 주문가능금액 조회 실패. 0으로 뭉개면 총자산 과소계상 → 유령 매도."""
+    raw = get_account_holdings()
+    holdings = (None if raw is None
+                else {h["ticker"]: h for h in raw if h["ticker"] in MANAGED_UNIVERSE})
     cash = get_order_possible_cash("", 0)
     return holdings, cash
 
@@ -96,17 +103,14 @@ def _sweep_leftover_cash(rows: list[dict], budget: float) -> None:
 
 def preview_rebalance() -> dict:
     """주문 없이 목표 비중·현재 비중·필요 주문 수량만 계산 (활성 전략 기준)."""
-    from scanner.strategy_rebalance import STRATEGIES
     targets = compute_target_weights(STRATEGY_KEY)
     holdings, cash = _current_state()
 
-    # 데이터 장애 방어 ② — positions.json엔 보유가 있는데 KIS 잔고조회가 비면 = 잔고 API
-    # 일시 장애. 그대로 진행하면 현재 보유를 0으로 착각해 전량 매도 계획을 세우거나
-    # positions.json을 날린다(08-03 실제 사고). snapshot_equity와 동일 가드로 중단한다.
-    expected = [p for p in load_positions()
-                if p.get("strategy") in STRATEGIES and p.get("quantity", 0) > 0]
-    if expected and not holdings:
-        reason = f"KIS 잔고조회 실패 (positions.json 상 {len(expected)}종목 보유 예상)"
+    # 데이터 장애 방어 ② — 잔고조회 API 장애(holdings=None). 그대로 진행하면 현재 보유를
+    # 0으로 착각해 전량 매도 계획을 세운다. 단, holdings={}(정상 조회·빈 계좌=전량 매도한
+    # 상태)는 장애가 아니라 실제 상태이므로 진행한다(목표대로 신규 매수 = 재진입).
+    if holdings is None:
+        reason = "KIS 잔고조회 실패 (API 장애)"
         log.error(f"[리밸런싱] 실행 불가 — {reason}")
         return {"total_value": cash or 0, "cash": cash or 0, "rows": [],
                 "actionable": False, "reason": reason,
@@ -258,25 +262,23 @@ def execute_rebalance() -> dict:
 def snapshot_equity() -> dict | None:
     """오늘 포트폴리오 평가금액을 equity_snapshots.json에 기록 (하루 1건, 날짜 dedupe).
 
-    KIS 잔고 API가 간헐적 500을 뱉으면 보유가 빈 리스트로 와서 equity=0 스냅샷이
-    남고 그래프가 바닥으로 꺾인다. positions.json 기준 보유가 있는데 조회 결과가
-    비어 있으면 조회 실패로 보고 기록을 건너뛴다."""
-    from scanner.strategy_rebalance import STRATEGIES
-    holdings, cash = _current_state()
+    잔고조회 API가 장애면(holdings=None) 기록을 건너뛴다 — 0원 스냅샷이 남아 그래프가
+    바닥으로 꺾이는 것을 방지. holdings={}(정상 조회·빈 계좌=전량 매도)는 실제 상태이므로
+    현금만 있는 스냅샷을 정상 기록한다.
+    현금은 매도대금 포함 총 예수금(get_deposit_balance)으로 잡아, 방금 판 대금이
+    그래프에서 사라지지 않게 한다(주문가능금액은 정산 전이라 과소계상)."""
+    holdings, _ = _current_state()
 
-    expected = [p for p in load_positions()
-                if p.get("strategy") in STRATEGIES and p.get("quantity", 0) > 0]
-    if expected and not holdings:
-        log.error(f"[스냅샷] 보유 {len(expected)}종목 예상되나 KIS 잔고조회 결과 없음 "
-                  f"— 조회 실패로 판단, 스냅샷 기록 건너뜀")
+    if holdings is None:
+        log.error("[스냅샷] KIS 잔고조회 실패(API 장애) — 스냅샷 기록 건너뜀")
         send_telegram(
             "⚠️ *평가금액 스냅샷 건너뜀*\n"
-            f"positions.json 상 {len(expected)}종목 보유 중이나 KIS 잔고조회가 비어 있습니다.\n"
-            "API 일시 오류로 판단해 잘못된 0원 기록을 방지했습니다."
+            "KIS 잔고조회 API가 응답하지 않아 잘못된 0원 기록을 방지했습니다."
         )
         return None
 
-    cash   = cash or 0   # 현금 조회 실패는 0으로 (equity는 보유 기준이라 그래프 정확)
+    cash   = get_deposit_balance()
+    cash   = cash if cash is not None else (get_order_possible_cash("", 0) or 0)
     total  = _total_value(holdings, cash)
     equity = total - cash
     today  = datetime.now(KST).strftime("%Y-%m-%d")
@@ -305,7 +307,7 @@ def _post_order_holdings() -> dict[str, dict]:
     """체결 반영을 기다린 뒤 잔고를 한 번 조회한다(계측·동기화 공용 스냅샷)."""
     try:
         time.sleep(ORDER_SETTLE_WAIT)
-        return {h["ticker"]: h for h in get_account_holdings()}
+        return {h["ticker"]: h for h in (get_account_holdings() or [])}
     except Exception as e:
         log.warning(f"[리밸런싱] 주문 후 잔고조회 실패: {e}")
         return {}

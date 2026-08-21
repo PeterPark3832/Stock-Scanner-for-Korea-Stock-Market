@@ -216,16 +216,20 @@ def calc_order_qty(price: int, budget: int) -> int:
     return budget // price
 
 
-def get_account_holdings() -> list[dict]:
-    """KIS 실제 보유 종목 조회 → [{ticker, name, qty, avg_price}]. 실패 시 []."""
+def get_account_holdings() -> list[dict] | None:
+    """KIS 실제 보유 종목 조회 → [{ticker, name, qty, avg_price}].
+
+    조회 '실패'는 None, '성공했으나 보유 없음(빈 계좌)'은 [] 로 구분해서 돌려준다.
+    이 둘을 [] 하나로 뭉개면, 사용자가 전량 매도한 빈 계좌를 API 장애로 오인해
+    스냅샷을 스킵하고 리밸런싱을 막는다(호출자가 None만 장애로 처리하도록)."""
     token = get_kis_access_token()
     if not token:
         log.warning("[KIS 잔고조회] 토큰 발급 실패 — 건너뜀")
-        return []
+        return None
     cano, acnt_prdt = _parse_account()
     if not cano:
         log.warning("[KIS 잔고조회] KIS_ACCOUNT_NO 미설정 — 건너뜀")
-        return []
+        return None
 
     tr_id = "TTTC8434R" if _KIS_MODE == "real" else "VTTC8434R"
     data = None
@@ -264,11 +268,11 @@ def get_account_holdings() -> list[dict]:
                 time.sleep(2 * (attempt + 1))
             else:
                 log.error(f"[KIS 잔고조회] API 호출 3회 실패: {e}")
-                return []
+                return None
 
     if not data or data.get("rt_cd") != "0":
         log.warning(f"[KIS 잔고조회] API 오류: {(data or {}).get('msg1', '')}")
-        return []
+        return None
 
     out = []
     for h in data.get("output1", []):
@@ -283,6 +287,50 @@ def get_account_holdings() -> list[dict]:
             "avg_price": int(float(h.get("pchs_avg_pric", "0"))),
         })
     return out
+
+
+def get_deposit_balance() -> int | None:
+    """총 예수금(D+2 가수도정산금액) 조회 — 매도대금 포함. 조회 실패 시 None.
+
+    주문가능금액(inquire-psbl-order)은 정산 전 현금만 잡혀, 방금 판 대금이 안 보인다.
+    표시·평가금액용으로는 매도대금까지 포함한 예수금(prvs_rcdl_excc_amt)을 쓴다.
+    (주문 사이징은 정산 전 미주문 방지를 위해 여전히 get_order_possible_cash 사용)"""
+    token = get_kis_access_token()
+    if not token:
+        return None
+    cano, acnt_prdt = _parse_account()
+    if not cano:
+        return None
+    tr_id = "TTTC8434R" if _KIS_MODE == "real" else "VTTC8434R"
+    for attempt in range(3):
+        try:
+            res = requests.get(
+                f"{KIS_BASE_URL}/uapi/domestic-stock/v1/trading/inquire-balance",
+                headers={
+                    "Authorization": f"Bearer {token}", "appkey": KIS_APP_KEY,
+                    "appsecret": KIS_APP_SECRET, "tr_id": tr_id,
+                    "Content-Type": "application/json; charset=utf-8",
+                },
+                params={
+                    "CANO": cano, "ACNT_PRDT_CD": acnt_prdt, "AFHR_FLPR_YN": "N",
+                    "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                    "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                    "PRCS_DVSN": "00", "CTX_AREA_FK100": "", "CTX_AREA_NK100": "",
+                },
+                timeout=10,
+            )
+            res.raise_for_status()
+            data = res.json()
+            if data.get("rt_cd") == "0":
+                out2 = (data.get("output2") or [{}])[0]
+                raw = out2.get("prvs_rcdl_excc_amt") or out2.get("dnca_tot_amt") or "0"
+                return int(float(raw))
+        except Exception as e:
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+            else:
+                log.error(f"[KIS 예수금조회] 3회 실패: {e}")
+    return None
 
 
 def sync_kis_holdings() -> int:

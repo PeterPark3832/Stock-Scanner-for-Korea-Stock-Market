@@ -183,8 +183,22 @@ def get_account_holdings() -> list[dict] | None:
             continue
         out.append({"ticker": ticker, "name": h.get("prdt_name", ticker), "qty": qty,
                     "avg_price": int(float(h.get("pchs_avg_pric", "0") or 0))})
-    _holdings_cache.update(expires_at=time.time() + _PRICE_TTL, value=out)
+    # 같은 응답의 output2에서 총 예수금(D+2 가수도정산금액)도 함께 캐시 —
+    # 방금 판 매도대금이 정산 전이라 주문가능금액엔 안 잡히므로, 표시는 이 값을 쓴다.
+    out2 = (data.get("output2") or [{}])[0]
+    deposit_raw = out2.get("prvs_rcdl_excc_amt") or out2.get("dnca_tot_amt") or "0"
+    try:
+        deposit = int(float(deposit_raw))
+    except (TypeError, ValueError):
+        deposit = None
+    _holdings_cache.update(expires_at=time.time() + _PRICE_TTL, value=out, deposit=deposit)
     return out
+
+def get_deposit() -> int | None:
+    """총 예수금(매도대금 포함, D+2). get_account_holdings와 같은 잔고조회 1회로 채워진다."""
+    if _holdings_cache["value"] is None or time.time() >= _holdings_cache["expires_at"]:
+        get_account_holdings()   # 캐시 갱신(같은 호출로 deposit도 채움)
+    return _holdings_cache.get("deposit")
 
 def send_telegram(text: str) -> None:
     token    = read_env("TELEGRAM_TOKEN")
@@ -344,7 +358,10 @@ def _portfolio_snapshot() -> dict:
         holdings.append({"ticker": r["ticker"], "name": r["name"],
                          "qty": qty, "price": price, "value": val, "entry": entry,
                          "pnl_pct": pnl_pct, "target_weight": tw_map.get(r["ticker"], 0)})
-    cash  = get_order_possible_cash() or 0
+    # 현금은 매도대금 포함 총 예수금(D+2). 방금 판 대금이 정산 전이라 주문가능금액엔
+    # 안 잡히므로, 표시·평가금액엔 예수금을 쓴다. 조회 실패 시 주문가능금액으로 폴백.
+    dep = get_deposit()
+    cash  = dep if dep is not None else (get_order_possible_cash() or 0)
     total = equity + cash
     for h in holdings:
         h["current_weight"] = round(h["value"] / total * 100, 1) if total else 0

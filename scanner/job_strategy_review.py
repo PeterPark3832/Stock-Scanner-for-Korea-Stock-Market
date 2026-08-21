@@ -240,7 +240,7 @@ def _current_equity() -> int | None:
     try:
         from scanner.job_rebalance import _current_state, _total_value
         holdings, cash = _current_state()
-        total = _total_value(holdings, cash)
+        total = _total_value(holdings or {}, cash)
         return total if total > 0 else None
     except Exception:
         return None

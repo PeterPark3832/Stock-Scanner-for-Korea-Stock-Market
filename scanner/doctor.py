@@ -136,6 +136,7 @@ def check_capital() -> Check:
         from scanner.job_rebalance import _current_state, _total_value, _live_prices
         targets = compute_target_weights(STRATEGY_KEY)
         holdings, cash = _current_state()
+        holdings = holdings or {}   # 잔고조회 실패(None) 안전 처리
         live = _live_prices([t["ticker"] for t in targets] + list(holdings))
         total = _total_value(holdings, cash, live)
     except Exception as e:

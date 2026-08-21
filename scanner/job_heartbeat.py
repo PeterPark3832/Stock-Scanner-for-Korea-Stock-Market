@@ -104,8 +104,12 @@ def _heartbeat_rebalance(now: datetime) -> None:
     from scanner.config import _KIS_MODE, STRATEGY_KEY, REBALANCE_TIME
     from scanner.strategy_rebalance import get_strategy
     from scanner.job_rebalance import _current_state, _total_value
-    holdings, cash = _current_state()
-    cash   = cash or 0   # 현금 조회 실패(None)를 표시용 0으로
+    from scanner.kis import get_deposit_balance, get_order_possible_cash
+    holdings, _ = _current_state()
+    holdings = holdings or {}   # 잔고조회 실패(None)를 표시용 빈 dict로
+    # 표시 현금은 매도대금 포함 총 예수금 (주문가능금액은 정산 전이라 과소)
+    cash   = get_deposit_balance()
+    cash   = cash if cash is not None else (get_order_possible_cash("", 0) or 0)
     total  = _total_value(holdings, cash)
     equity = total - cash
     with state._auto_trade_lock:

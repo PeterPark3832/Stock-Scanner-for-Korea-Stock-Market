@@ -17,6 +17,8 @@ def no_network(monkeypatch):
     monkeypatch.setattr(jr, "load_positions", lambda: [])
     # 체결 반영 대기는 실거래용 — 테스트에서 실제로 잠들 이유가 없다.
     monkeypatch.setattr(jr, "ORDER_SETTLE_WAIT", 0)
+    # 예수금 조회는 표시 전용 — 기본은 None(폴백은 get_order_possible_cash).
+    monkeypatch.setattr(jr, "get_deposit_balance", lambda: None)
 
 
 class TestTotalValue:
@@ -76,32 +78,35 @@ class TestPreviewRebalance:
         assert plan["actionable"] is False
         assert plan["rows"] == []
 
-    def test_aborts_when_holdings_query_fails_but_positions_exist(self, monkeypatch):
-        """positions.json엔 보유가 있는데 KIS 잔고가 비면 = 조회 실패.
-        전량 매도 계획을 세우지 말고 중단해야 한다(08-03 실제 사고 회귀)."""
+    def test_aborts_when_holdings_query_fails(self, monkeypatch):
+        """잔고조회 API 장애(None)면 현재 보유를 0으로 착각해 전량 매도하지 말고 중단."""
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
             {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
         ])
-        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])   # 잔고 조회 실패
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: None)  # API 장애
         monkeypatch.setattr(jr, "load_positions", lambda: [
             {"ticker": "069500", "strategy": "kr_gem", "quantity": 10},
         ])
         monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
         plan = jr.preview_rebalance()
         assert plan["actionable"] is False
-        assert plan["rows"] == [], "조회 실패인데 매도 행 생성 — 전량 청산 위험"
+        assert plan["rows"] == [], "조회 장애인데 매도 행 생성 — 전량 청산 위험"
 
-    def test_stays_actionable_on_genuinely_empty_account(self, monkeypatch):
-        """실제로 보유가 없는 신규 계좌(positions.json도 비어 있음)는 정상 진행."""
+    def test_proceeds_when_account_genuinely_empty(self, monkeypatch):
+        """정상 조회로 빈 계좌([])면 — 신규 계좌든 사용자가 전량 매도했든 — 목표대로
+        재진입 매수를 진행한다(장애 None과 구분). positions.json 잔재는 무시."""
         monkeypatch.setattr(jr, "compute_target_weights", lambda key: [
             {"ticker": "069500", "name": "K200", "weight": 100.0, "price": 10_000},
         ])
-        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])
-        monkeypatch.setattr(jr, "load_positions", lambda: [])          # 기대 보유 없음
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])    # 정상 조회·빈 계좌
+        monkeypatch.setattr(jr, "load_positions", lambda: [           # 옛 보유 잔재
+            {"ticker": "069500", "strategy": "kr_gem", "quantity": 10},
+        ])
         monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: 1_000_000)
         monkeypatch.setattr(jr, "get_current_price", lambda tk: {"current": 10_000})
         plan = jr.preview_rebalance()
-        assert plan["actionable"] is True and plan["rows"], "빈 계좌 신규 매수가 막힘"
+        assert plan["actionable"] is True and plan["rows"], "빈 계좌 재진입 매수가 막힘"
+        assert all(r["diff_qty"] >= 0 for r in plan["rows"]), "빈 계좌인데 매도 행 발생"
 
     def test_aborts_when_cash_query_fails(self, monkeypatch):
         """주문가능금액 조회 실패(None)면 총자산이 과소계상돼 보유가 전부 소폭 매도로
@@ -377,11 +382,9 @@ class TestSnapshotEquity:
         return snap_file
 
     def test_skips_when_holdings_query_fails(self, monkeypatch, tmp_path):
-        """positions.json엔 보유가 있는데 KIS 잔고가 비면 0원 스냅샷 방지."""
+        """잔고조회 API 장애(None)면 0원 스냅샷을 남기지 않고 건너뛴다."""
         snap_file = self._patch_snapshot_file(monkeypatch, tmp_path)
-        monkeypatch.setattr(jr, "load_positions", lambda: [
-            {"ticker": "069500", "strategy": "kr_gem", "quantity": 10},
-        ])
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: None)  # API 장애
         sent = []
         monkeypatch.setattr(jr, "send_telegram", lambda msg: sent.append(msg))
         result = jr.snapshot_equity()
@@ -389,6 +392,16 @@ class TestSnapshotEquity:
         assert sent, "경고 텔레그램 발송"
         import os
         assert not os.path.exists(snap_file), "스냅샷 파일 미기록"
+
+    def test_records_empty_account_after_manual_sell(self, monkeypatch, tmp_path):
+        """전량 매도로 빈 계좌([])면 — 장애가 아니므로 — 현금만 있는 스냅샷을 정상 기록."""
+        self._patch_snapshot_file(monkeypatch, tmp_path)
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])    # 정상·빈 계좌
+        monkeypatch.setattr(jr, "get_deposit_balance", lambda: 4_290_502)  # 매도대금 포함 예수금
+        snap = jr.snapshot_equity()
+        assert snap is not None
+        assert snap["equity"] == 0 and snap["cash"] == 4_290_502
+        assert snap["total"] == 4_290_502, "매도대금 포함 예수금이 총자산에 반영"
 
     def test_records_and_dedupes_today(self, monkeypatch, tmp_path):
         snap_file = self._patch_snapshot_file(monkeypatch, tmp_path)

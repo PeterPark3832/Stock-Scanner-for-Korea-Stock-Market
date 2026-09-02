@@ -20,6 +20,7 @@ NAMES = {
     "133690": "미국 나스닥100 (TIGER)",
     "143850": "미국 S&P500 (TIGER, H)",
     "132030": "금 (KODEX 골드선물H)",
+    "130680": "원유 (TIGER 원유선물)",
     "091160": "반도체 (KODEX)",
     "114260": "국고채 3년 (안전자산)",
     "153130": "단기채권 (현금성)",
@@ -31,6 +32,17 @@ NAMES = {
 
 # ── 전략 레지스트리 ─────────────────────────────────────────────────
 STRATEGIES: dict[str, dict] = {
+    "kr_global_alt": {
+        "name": "글로벌 분산 + 대체자산", "profile": "밸런스",
+        "description": "KOSPI200·코스닥150·나스닥100·S&P500에 금·원유를 더해 자산 간 상관을 "
+                       "낮춘 조합. 단기(1/3/6개월) 모멘텀 상위 3개, 약세 시 국고채 도피",
+        "type": "dual",
+        "risk": ["069500", "229200", "133690", "143850", "132030", "130680"],
+        "safe": "114260", "cash_proxy": "153130", "top_n": 3,
+        # 3/6/12개월보다 1/3/6개월이 전 유니버스·양 검증구간에서 우위였다(백테스트).
+        "lookbacks": (21, 63, 126),
+        "min_seed": 1_000_000,
+    },
     "kr_asset_momentum": {
         "name": "한국 자산배분 모멘텀", "profile": "방어",
         "description": "KOSPI200·미국S&P·금·코스닥150 중 모멘텀 상위 3개로 분산, 약세 시 국고채 도피",
@@ -159,12 +171,17 @@ def _close_series(ticker: str, start: str) -> pd.Series | None:
     return s if len(s) else None
 
 
-def _blended_momentum(series: pd.Series | None) -> float | None:
-    """3/6/12개월 수익률 단순 평균. 가용 구간이 하나도 없으면 None."""
+def _blended_momentum(series: pd.Series | None,
+                      lookbacks: tuple[int, ...] | None = None) -> float | None:
+    """룩백 구간 수익률의 단순 평균. 가용 구간이 하나도 없으면 None.
+
+    lookbacks를 주면 그 기간을, 없으면 기본 3/6/12개월(_BLEND_LOOKBACKS)을 쓴다.
+    전략마다 모멘텀 속도가 달라야 하는 경우가 있어 스펙에서 주입할 수 있게 열어둔다."""
     if series is None or len(series) == 0:
         return None
+    lbs = lookbacks or _BLEND_LOOKBACKS
     rets = [float(series.iloc[-1] / series.iloc[-1 - d] - 1)
-            for d in _BLEND_LOOKBACKS if len(series) > d]
+            for d in lbs if len(series) > d]
     return sum(rets) / len(rets) if rets else None
 
 
@@ -182,8 +199,10 @@ def _w13612_momentum(series: pd.Series | None) -> float | None:
 
 def _compute_dual(spec: dict, closes: dict) -> dict[str, float]:
     risk, safe, cash, topn = spec["risk"], spec["safe"], spec["cash_proxy"], spec["top_n"]
-    cash_mom = _blended_momentum(closes.get(cash)) or 0.0
-    scored = [(tk, m) for tk in risk if (m := _blended_momentum(closes.get(tk))) is not None]
+    lb = spec.get("lookbacks")          # 전략별 모멘텀 기간 (없으면 기본 3/6/12)
+    cash_mom = _blended_momentum(closes.get(cash), lb) or 0.0
+    scored = [(tk, m) for tk in risk
+              if (m := _blended_momentum(closes.get(tk), lb)) is not None]
     # '데이터 장애'와 '전 자산 약세'를 구분한다. 상위 N개를 고를 만큼도 모멘텀을 못 구하면
     # 방어 신호가 아니라 판단 불가다. 여기서 안전자산 100%를 돌려주면 시세 API가 죽은 날
     # 보유 전량을 팔고 채권으로 갈아타게 된다(전략이 아니라 장애에 의한 시장 이탈).
@@ -266,7 +285,8 @@ def compute_target_weights(key: str = DEFAULT_KEY) -> list[dict]:
     start = (datetime.now() - timedelta(days=550)).strftime("%Y-%m-%d")
     closes = {tk: _close_series(tk, start) for tk in universe_for(key)}
 
-    max_lb = max(_W13612) if spec["type"] == "vaa" else max(_BLEND_LOOKBACKS)
+    max_lb = (max(_W13612) if spec["type"] == "vaa"
+              else max(spec.get("lookbacks") or _BLEND_LOOKBACKS))
     for tk, s in closes.items():
         if s is None:
             log.warning(f"[전략] {tk} 가격 데이터 없음 — 후보에서 제외")

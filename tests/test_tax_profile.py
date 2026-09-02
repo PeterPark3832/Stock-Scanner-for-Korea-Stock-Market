@@ -71,5 +71,6 @@ class TestUniverseCoverage:
             classified |= set(universe_for(key))
         # 비과세 목록에 없는 티커는 전부 '기타 ETF(과세)'로 의도된 것이어야 한다
         taxable = {tk for tk in classified if tk not in TAX_FREE_TICKERS}
-        expected_taxable = {"133690", "143850", "132030", "114260", "153130"}
+        # 130680(원유선물)은 파생형 = 기타 ETF → 매매차익 15.4% 과세 (검토 완료)
+        expected_taxable = {"133690", "143850", "132030", "130680", "114260", "153130"}
         assert taxable == expected_taxable, f"분류 미검토 티커: {taxable ^ expected_taxable}"

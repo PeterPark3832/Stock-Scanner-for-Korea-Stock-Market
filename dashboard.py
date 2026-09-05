@@ -637,9 +637,11 @@ def api_rebalance_history(token: str = ""):
                 if di == 0:
                     end_cf[date_str] = end_cf.get(date_str, 0) + cf
                 else:
-                    # V가 CF의 절반 이상 뛰었으면 same-day, 아니면 next-day
+                    # 그날의 V 변화를 'CF가 반영된 것'으로 볼 때 더 잘 설명되면 same-day.
+                    # 부호에 무관해야 한다 — v_jump >= cf*0.5 식은 입금엔 맞지만 출금에선
+                    # 부등호 의미가 뒤집혀, 당일 반영된 출금을 익일로 오분류한다.
                     v_jump = totals[di] - totals[di - 1]
-                    if v_jump >= cf * 0.5:
+                    if abs(v_jump - cf) < abs(v_jump):
                         end_cf[date_str] = end_cf.get(date_str, 0) + cf
                     else:
                         start_cf[date_str] = start_cf.get(date_str, 0) + cf

@@ -660,11 +660,13 @@ def api_rebalance_history(token: str = ""):
             denom = v_prev + s_cf
             numer = v_now - e_cf
             if denom <= 0 or v_now <= 0:
-                # 계좌가 비었다가 다시 채워지는 구간 = 미기록 출금/입금.
-                # 이를 수익률로 체이닝하면 r=-100%가 되어 지수가 영구히 0이 되고
-                # (0 x 무엇이든 0) 이후 성과가 전부 사라진다. 흐름으로 보고 중립화.
+                # 계좌가 비어 있는 구간. 수익률로 체이닝하면 r=-100%가 되어 지수가
+                # 영구히 0이 되고(0 x 무엇이든 0) 이후 성과가 전부 사라진다 → 중립화.
                 r = 0.0
-                unrecorded_flow_days += 1
+                # 값이 실제로 변했는데 기록된 입출금이 설명하지 못할 때만 '누락'이다.
+                # 기록된 출금으로 비워졌거나(설명됨), 0원이 이어지는 날은 데이터 문제가 아니다.
+                if v_prev != v_now and not (e_cf or s_cf):
+                    unrecorded_flow_days += 1
             else:
                 r = numer / denom - 1
                 if abs(r) > _IMPLAUSIBLE_DAILY_MOVE:

@@ -398,6 +398,10 @@ def _equity_snapshots() -> list[dict]:
             if s.get("equity", 0) > 0 or i == 0 or i == len(snaps) - 1
             or snaps[i - 1].get("equity", 0) <= 0 or snaps[i + 1].get("equity", 0) <= 0]
 
+# 분산 ETF 포트폴리오가 하루에 낼 수 있는 변동의 상한(현실적). 이를 넘는 일간 변화는
+# 시장 수익이 아니라 기록되지 않은 입출금으로 보고 TWR 체이닝에서 중립화한다.
+_IMPLAUSIBLE_DAILY_MOVE = 0.35
+
 CASHFLOW_FILE = os.path.join(BASE_DIR, "cash_flows.json")
 _flow_lock = threading.Lock()
 def _cash_flows() -> list[dict]:
@@ -621,6 +625,7 @@ def api_rebalance_history(token: str = ""):
     #   same-day: 당일 V 스냅샷에 CF 반영됨 → (V_now - CF) / V_prev - 1
     #   next-day: 당일 V에 미반영, 다음날 V에 반영됨 → V_now / (V_prev + CF_prev) - 1
     twr_index, kospi_index = [], []
+    unrecorded_flow_days = 0
     if full_dates:
         date_to_idx = {d: i for i, d in enumerate(full_dates)}
         end_cf: dict = {}   # 당일 V에 이미 포함된 CF
@@ -652,7 +657,19 @@ def api_rebalance_history(token: str = ""):
             e_cf = end_cf.get(full_dates[i], 0)          # 오늘 CF → 오늘 V에 이미 포함
             denom = v_prev + s_cf
             numer = v_now - e_cf
-            r = (numer / denom - 1) if denom > 0 else 0.0
+            if denom <= 0 or v_now <= 0:
+                # 계좌가 비었다가 다시 채워지는 구간 = 미기록 출금/입금.
+                # 이를 수익률로 체이닝하면 r=-100%가 되어 지수가 영구히 0이 되고
+                # (0 x 무엇이든 0) 이후 성과가 전부 사라진다. 흐름으로 보고 중립화.
+                r = 0.0
+                unrecorded_flow_days += 1
+            else:
+                r = numer / denom - 1
+                if abs(r) > _IMPLAUSIBLE_DAILY_MOVE:
+                    # 분산 ETF 포트폴리오가 하루에 낼 수 없는 변동 = 미기록 입출금.
+                    # 기록되지 않은 입금을 수익으로, 출금을 손실로 잡지 않도록 중립화한다.
+                    r = 0.0
+                    unrecorded_flow_days += 1
             idx *= (1 + r)
             twr_index.append(round(idx, 2))
         if b0:
@@ -666,6 +683,9 @@ def api_rebalance_history(token: str = ""):
                          "dates": labels, "value_curve": totals, "benchmark_value": bench_value,
                          "twr_index": twr_index, "kospi_index": kospi_index,
                          "twr_pct": twr_pct, "kospi_pct": kospi_pct, "alpha": alpha,
+                         # 미기록 입출금으로 중립화한 날 수 — 0보다 크면 수익률이
+                         # 실제 성과를 온전히 반영하지 못하므로 UI가 경고한다.
+                         "unrecorded_flow_days": unrecorded_flow_days,
                          "exec_dates": exec_dates})
 
 @app.post("/api/rebalance/execute")
@@ -1625,9 +1645,13 @@ function renderChart() {
     const a = d.alpha || 0, t = d.twr_pct || 0, k = d.kospi_pct || 0;
     const col = a >= 0 ? "var(--c-up)" : "var(--c-down)";
     alpha.style.display = "block";
+    const unrec = d.unrecorded_flow_days || 0;
     alpha.innerHTML = `전략 <b style="color:${t>=0?'var(--c-up)':'var(--c-down)'}">${t>=0?'+':''}${t.toFixed(2)}%</b>`
       + ` · KOSPI200 <b>${k>=0?'+':''}${k.toFixed(2)}%</b>`
-      + ` · 알파 <b style="color:${col}">${a>=0?'+':''}${a.toFixed(2)}%p</b>`;
+      + ` · 알파 <b style="color:${col}">${a>=0?'+':''}${a.toFixed(2)}%p</b>`
+      + (unrec ? `<div style="color:var(--c-text2);font-size:12px;margin-top:4px">`
+          + `⚠️ 기록되지 않은 입출금으로 보이는 날 ${unrec}일을 수익률 계산에서 제외했습니다. `
+          + `정확한 수익률을 보려면 '입출금 기록'에 입금·출금을 남겨주세요.</div>` : "");
   } else {
     renderReturnCurve(d.dates || [], d.value_curve || [], d.benchmark_value || []);
     alpha.style.display = "none";

@@ -277,8 +277,19 @@ def snapshot_equity() -> dict | None:
         )
         return None
 
-    cash   = get_deposit_balance()
-    cash   = cash if cash is not None else (get_order_possible_cash("", 0) or 0)
+    cash = get_deposit_balance()
+    if cash is None:
+        cash = get_order_possible_cash("", 0)
+    if cash is None:
+        # 현금을 못 구하면 total이 실제보다 작게(보유 없으면 0원으로) 기록돼
+        # 그래프가 바닥으로 꺾인다. 보유 조회 실패와 같은 이유로 기록을 건너뛴다.
+        log.error("[스냅샷] 예수금·주문가능금액 조회 모두 실패 — 스냅샷 기록 건너뜀")
+        send_telegram(
+            "⚠️ *평가금액 스냅샷 건너뜀*\n"
+            "KIS 예수금 조회가 실패해 잘못된 금액이 기록되는 것을 막았습니다."
+        )
+        return None
+
     total  = _total_value(holdings, cash)
     equity = total - cash
     today  = datetime.now(KST).strftime("%Y-%m-%d")

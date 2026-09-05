@@ -403,6 +403,20 @@ class TestSnapshotEquity:
         assert snap["equity"] == 0 and snap["cash"] == 4_290_502
         assert snap["total"] == 4_290_502, "매도대금 포함 예수금이 총자산에 반영"
 
+    def test_skips_when_cash_lookup_fails(self, monkeypatch, tmp_path):
+        """예수금·주문가능금액을 모두 못 구하면 0원으로 기록하지 말고 건너뛴다.
+        (보유가 없을 때 total이 0원으로 남아 그래프가 바닥으로 꺾이던 문제)"""
+        snap_file = self._patch_snapshot_file(monkeypatch, tmp_path)
+        monkeypatch.setattr(jr, "get_account_holdings", lambda: [])     # 정상·빈 계좌
+        monkeypatch.setattr(jr, "get_deposit_balance", lambda: None)    # 예수금 조회 실패
+        monkeypatch.setattr(jr, "get_order_possible_cash", lambda t, p: None)  # 폴백도 실패
+        sent = []
+        monkeypatch.setattr(jr, "send_telegram", lambda msg: sent.append(msg))
+        assert jr.snapshot_equity() is None
+        assert sent, "경고 텔레그램 발송"
+        import os
+        assert not os.path.exists(snap_file), "0원 스냅샷이 기록됨"
+
     def test_records_and_dedupes_today(self, monkeypatch, tmp_path):
         snap_file = self._patch_snapshot_file(monkeypatch, tmp_path)
         monkeypatch.setattr(jr, "load_positions", lambda: [])
